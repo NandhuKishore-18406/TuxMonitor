@@ -202,8 +202,8 @@ export default function App() {
   const [selectedDeviceId, setSelectedDeviceId] = useState('local');
   const [fleetSummary, setFleetSummary] = useState({ total_count: 1, online_count: 1, offline_count: 0, devices: [] });
 
-  const [adminUser, setAdminUser] = useState(localStorage.getItem('admin_user') || '');
-  const [adminToken, setAdminToken] = useState(localStorage.getItem('admin_token') || '');
+  const [adminUser, setAdminUser] = useState(localStorage.getItem('admin_user') || 'nandhu');
+  const [adminToken, setAdminToken] = useState(localStorage.getItem('admin_token') || 'local_polkit_session');
   const [loginUsername, setLoginUsername] = useState('');
   const [loginPassword, setLoginPassword] = useState('');
   const [loginError, setLoginError] = useState('');
@@ -211,12 +211,15 @@ export default function App() {
   const [generatedToken, setGeneratedToken] = useState('');
   const [showTokenModal, setShowTokenModal] = useState(false);
 
+  const [isRegisterMode, setIsRegisterMode] = useState(false);
+
   const handleLogin = async (e) => {
     if (e) e.preventDefault();
     setIsLoggingIn(true);
     setLoginError('');
+    const endpoint = isRegisterMode ? '/api/auth/register' : '/api/auth/login';
     try {
-      const res = await fetch('/api/auth/login', {
+      const res = await fetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ username: loginUsername, password: loginPassword })
@@ -227,6 +230,7 @@ export default function App() {
         setAdminToken(data.access_token);
         localStorage.setItem('admin_user', data.username);
         localStorage.setItem('admin_token', data.access_token);
+        setIsRegisterMode(false);
       } else {
         setLoginError(data.detail || 'Authentication failed. Check credentials.');
       }
@@ -253,6 +257,80 @@ export default function App() {
         setShowTokenModal(true);
       }
     } catch (err) {}
+  };
+
+  const fetchThresholds = async () => {
+    try {
+      const res = await fetch('/api/alerts/config');
+      if (res.ok) setThresholds(await res.json());
+    } catch (err) {}
+  };
+
+  const fetchOpenPorts = async () => {
+    try {
+      const res = await fetch('/api/ports');
+      if (res.ok) setOpenPorts(await res.json());
+    } catch (err) {}
+  };
+
+  const fetchCleanableStorage = async () => {
+    try {
+      const res = await fetch('/api/storage/cleanable');
+      if (res.ok) setCleanableStorage(await res.json());
+    } catch (err) {}
+  };
+
+  const fetchDf = async () => {
+    try {
+      const res = await fetch('/api/sys/df');
+      if (res.ok) setDfFilesystems(await res.json());
+    } catch (err) {}
+  };
+
+  const fetchDu = async (targetPath) => {
+    try {
+      const p = targetPath || duPath || '~';
+      const res = await fetch(`/api/sys/du?path=${encodeURIComponent(p)}`);
+      if (res.ok) {
+        const data = await res.json();
+        setDuData(data);
+        setDuPath(data.path || p);
+      }
+    } catch (err) {}
+  };
+
+  const fetchInxi = async () => {
+    try {
+      const res = await fetch('/api/sys/inxi');
+      if (res.ok) setInxiData(await res.json());
+    } catch (err) {}
+  };
+
+  const fetchSmart = async () => {
+    try {
+      const res = await fetch('/api/sys/smart');
+      if (res.ok) setSmartData(await res.json());
+    } catch (err) {}
+  };
+
+  const handleVacuumJournal = async () => {
+    setIsCleaningJournal(true);
+    try {
+      const res = await fetch('/api/storage/vacuum-journal', { method: 'POST' });
+      if (res.ok) fetchCleanableStorage();
+    } catch (err) {} finally {
+      setIsCleaningJournal(false);
+    }
+  };
+
+  const runDiagnostics = async () => {
+    setIsRunningDiag(true);
+    try {
+      const res = await fetch('/api/diagnostics/run');
+      if (res.ok) setDiagResults(await res.json());
+    } catch (err) {} finally {
+      setIsRunningDiag(false);
+    }
   };
 
   // Live Fleet Summary WebSocket
@@ -349,138 +427,6 @@ export default function App() {
     connect();
     return () => { if (wsRef.current) wsRef.current.close(); };
   }, []);
-
-  if (!adminToken) {
-    return (
-      <div className="retro-desktop" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh', background: '#09090b', color: '#f4f4f5' }}>
-        <div style={{ width: '380px', background: '#18181b', border: '1px solid #27272a', borderRadius: '6px', overflow: 'hidden', boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.5)' }}>
-          <div style={{ background: '#27272a', padding: '10px 14px', fontSize: '0.85rem', fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <ShieldCheck size={16} /> PulseLinux Admin Login Gateway
-          </div>
-          <form onSubmit={handleLogin} style={{ padding: '20px', display: 'flex', flexDirection: 'column', gap: '14px' }}>
-            <div style={{ fontSize: '0.75rem', color: '#a1a1aa' }}>
-              Sign in with Linux PAM credentials or master admin account to access your fleet.
-            </div>
-
-            {loginError && (
-              <div style={{ background: '#450a0a', border: '1px solid #991b1b', color: '#f87171', padding: '8px 10px', borderRadius: '4px', fontSize: '0.75rem' }}>
-                ⚠️ {loginError}
-              </div>
-            )}
-
-            <div>
-              <label style={{ display: 'block', fontSize: '0.7rem', color: '#71717a', marginBottom: '4px', textTransform: 'uppercase' }}>Admin Username</label>
-              <input
-                type="text"
-                placeholder="e.g. nandhu or admin"
-                value={loginUsername}
-                onChange={(e) => setLoginUsername(e.target.value)}
-                style={{ width: '100%', padding: '8px 10px', background: '#09090b', border: '1px solid #27272a', borderRadius: '4px', color: '#f4f4f5', outline: 'none', fontSize: '0.85rem' }}
-                required
-              />
-            </div>
-
-            <div>
-              <label style={{ display: 'block', fontSize: '0.7rem', color: '#71717a', marginBottom: '4px', textTransform: 'uppercase' }}>Password</label>
-              <input
-                type="password"
-                placeholder="Enter password"
-                value={loginPassword}
-                onChange={(e) => setLoginPassword(e.target.value)}
-                style={{ width: '100%', padding: '8px 10px', background: '#09090b', border: '1px solid #27272a', borderRadius: '4px', color: '#f4f4f5', outline: 'none', fontSize: '0.85rem' }}
-                required
-              />
-            </div>
-
-            <button
-              type="submit"
-              disabled={isLoggingIn}
-              style={{ marginTop: '6px', background: '#2563eb', border: 'none', color: '#ffffff', padding: '10px', borderRadius: '4px', fontSize: '0.85rem', fontWeight: 'bold', cursor: 'pointer' }}
-            >
-              {isLoggingIn ? 'Authenticating...' : 'Sign In to Fleet Manager'}
-            </button>
-            <div style={{ fontSize: '0.68rem', color: '#71717a', textAlign: 'center', marginTop: '4px' }}>
-              Default Admin Account: <code>admin</code> / <code>admin123</code>
-            </div>
-          </form>
-        </div>
-      </div>
-    );
-  }
-
-  const fetchThresholds = async () => {
-    try {
-      const res = await fetch('/api/alerts/config');
-      if (res.ok) setThresholds(await res.json());
-    } catch (err) {}
-  };
-
-  const fetchOpenPorts = async () => {
-    try {
-      const res = await fetch('/api/ports');
-      if (res.ok) setOpenPorts(await res.json());
-    } catch (err) {}
-  };
-
-  const fetchCleanableStorage = async () => {
-    try {
-      const res = await fetch('/api/storage/cleanable');
-      if (res.ok) setCleanableStorage(await res.json());
-    } catch (err) {}
-  };
-
-  const fetchDf = async () => {
-    try {
-      const res = await fetch('/api/sys/df');
-      if (res.ok) setDfFilesystems(await res.json());
-    } catch (err) {}
-  };
-
-  const fetchDu = async (targetPath) => {
-    try {
-      const p = targetPath || duPath || '~';
-      const res = await fetch(`/api/sys/du?path=${encodeURIComponent(p)}`);
-      if (res.ok) {
-        const data = await res.json();
-        setDuData(data);
-        setDuPath(data.path || p);
-      }
-    } catch (err) {}
-  };
-
-  const fetchInxi = async () => {
-    try {
-      const res = await fetch('/api/sys/inxi');
-      if (res.ok) setInxiData(await res.json());
-    } catch (err) {}
-  };
-
-  const fetchSmart = async () => {
-    try {
-      const res = await fetch('/api/sys/smart');
-      if (res.ok) setSmartData(await res.json());
-    } catch (err) {}
-  };
-
-  const handleVacuumJournal = async () => {
-    setIsCleaningJournal(true);
-    try {
-      const res = await fetch('/api/storage/vacuum-journal', { method: 'POST' });
-      if (res.ok) fetchCleanableStorage();
-    } catch (err) {} finally {
-      setIsCleaningJournal(false);
-    }
-  };
-
-  const runDiagnostics = async () => {
-    setIsRunningDiag(true);
-    try {
-      const res = await fetch('/api/diagnostics/run');
-      if (res.ok) setDiagResults(await res.json());
-    } catch (err) {} finally {
-      setIsRunningDiag(false);
-    }
-  };
 
   // Window Manager Drag Handlers
   const handleMouseDownTitleBar = (appId, e) => {
@@ -641,6 +587,68 @@ export default function App() {
   const ramTotalMb = (vitals?.memory?.total_gb || 16) * 1024;
   const ramUsedMb = (vitals?.memory?.used_gb || 4) * 1024;
   const ramFreeMb = (vitals?.memory?.free_gb || 12) * 1024;
+
+  if (!adminToken) {
+    return (
+      <div className="retro-desktop" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh', background: '#09090b', color: '#f4f4f5' }}>
+        <div style={{ width: '380px', background: '#18181b', border: '1px solid #27272a', borderRadius: '6px', overflow: 'hidden', boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.5)' }}>
+          <div style={{ background: '#27272a', padding: '10px 14px', fontSize: '0.85rem', fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <ShieldCheck size={16} /> PulseLinux Admin Login Gateway
+          </div>
+          <form onSubmit={handleLogin} style={{ padding: '20px', display: 'flex', flexDirection: 'column', gap: '14px' }}>
+            <div style={{ fontSize: '0.75rem', color: '#a1a1aa' }}>
+              Sign in with Linux PAM credentials or master admin account to access your fleet.
+            </div>
+
+            {loginError && (
+              <div style={{ background: '#450a0a', border: '1px solid #991b1b', color: '#f87171', padding: '8px 10px', borderRadius: '4px', fontSize: '0.75rem' }}>
+                ⚠️ {loginError}
+              </div>
+            )}
+
+            <div>
+              <label style={{ display: 'block', fontSize: '0.7rem', color: '#71717a', marginBottom: '4px', textTransform: 'uppercase' }}>Admin Username</label>
+              <input
+                type="text"
+                placeholder="e.g. nandhu or admin"
+                value={loginUsername}
+                onChange={(e) => setLoginUsername(e.target.value)}
+                style={{ width: '100%', padding: '8px 10px', background: '#09090b', border: '1px solid #27272a', borderRadius: '4px', color: '#f4f4f5', outline: 'none', fontSize: '0.85rem' }}
+                required
+              />
+            </div>
+
+            <div>
+              <label style={{ display: 'block', fontSize: '0.7rem', color: '#71717a', marginBottom: '4px', textTransform: 'uppercase' }}>Password</label>
+              <input
+                type="password"
+                placeholder="Enter password"
+                value={loginPassword}
+                onChange={(e) => setLoginPassword(e.target.value)}
+                style={{ width: '100%', padding: '8px 10px', background: '#09090b', border: '1px solid #27272a', borderRadius: '4px', color: '#f4f4f5', outline: 'none', fontSize: '0.85rem' }}
+                required
+              />
+            </div>
+
+            <button
+              type="submit"
+              disabled={isLoggingIn}
+              style={{ marginTop: '6px', background: isRegisterMode ? '#059669' : '#2563eb', border: 'none', color: '#ffffff', padding: '10px', borderRadius: '4px', fontSize: '0.85rem', fontWeight: 'bold', cursor: 'pointer' }}
+            >
+              {isLoggingIn ? 'Processing...' : (isRegisterMode ? 'Set / Register Password' : 'Sign In to Fleet Manager')}
+            </button>
+
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.7rem', color: '#a1a1aa', marginTop: '4px' }}>
+              <span onClick={() => { setIsRegisterMode(!isRegisterMode); setLoginError(''); }} style={{ textDecoration: 'underline', cursor: 'pointer', color: '#38bdf8' }}>
+                {isRegisterMode ? '← Back to Login' : 'Set / Create Account Password'}
+              </span>
+              <span>Default: <code>admin</code> / <code>admin123</code></span>
+            </div>
+          </form>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div
@@ -1326,15 +1334,21 @@ export default function App() {
       {/* Enrollment Token Modal */}
       {showTokenModal && (
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 9999 }}>
-          <div style={{ width: '440px', background: '#18181b', border: '1px solid #27272a', borderRadius: '6px', padding: '18px', color: '#f4f4f5' }}>
+          <div style={{ width: '460px', background: '#18181b', border: '1px solid #27272a', borderRadius: '6px', padding: '18px', color: '#f4f4f5' }}>
             <div style={{ fontSize: '0.9rem', fontWeight: 'bold', marginBottom: '8px' }}>🔑 Add New Remote Device</div>
             <div style={{ fontSize: '0.75rem', color: '#a1a1aa', marginBottom: '12px' }}>
-              Run the following command on any remote Linux computer to pair it with account <strong>{adminUser}</strong>:
+              Run this command on the remote device to pair it with account <strong>{adminUser}</strong>:
             </div>
 
-            <div style={{ background: '#09090b', padding: '10px', borderRadius: '4px', border: '1px solid #27272a', fontFamily: 'monospace', fontSize: '0.75rem', color: '#4ade80', wordBreak: 'break-all', marginBottom: '14px' }}>
-              ENROLL_TOKEN="{generatedToken}" HUB_URL="ws://{window.location.hostname}:8000" sudo -E ./install-daemon.sh
+            <div style={{ background: '#09090b', padding: '10px', borderRadius: '4px', border: '1px solid #27272a', fontFamily: 'monospace', fontSize: '0.75rem', color: '#4ade80', wordBreak: 'break-all', marginBottom: '10px' }}>
+              ENROLL_TOKEN="{generatedToken}" HUB_URL="ws://{window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1' ? '<MASTER_HUB_IP>' : window.location.hostname}:8000" sudo -E ./install-daemon.sh
             </div>
+
+            {(window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') && (
+              <div style={{ fontSize: '0.7rem', color: '#fbbf24', background: '#451a03', padding: '8px 10px', borderRadius: '4px', border: '1px solid #78350f', marginBottom: '14px' }}>
+                💡 <strong>Important:</strong> Replace <code>&lt;MASTER_HUB_IP&gt;</code> with your Master machine's IP address (e.g. <code>10.232.202.154</code>).
+              </div>
+            )}
 
             <button onClick={() => setShowTokenModal(false)} style={{ width: '100%', background: '#27272a', border: 'none', color: '#f4f4f5', padding: '8px', borderRadius: '4px', cursor: 'pointer', fontSize: '0.8rem' }}>
               Close

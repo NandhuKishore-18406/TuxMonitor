@@ -482,6 +482,16 @@ async def startup_event():
     dev = fleet_hub.register_or_update_device("local-node", hostname, "127.0.0.1", distro_name, distro_id, None)
     dev.latest_vitals = get_vitals_snapshot()
 
+    # If HUB_URL is set to a remote master hub, auto-connect background agent client
+    hub_url = os.environ.get("HUB_URL")
+    if hub_url and "127.0.0.1" not in hub_url and "localhost" not in hub_url:
+        try:
+            from agent_client import AgentClient
+            client = AgentClient(hub_url=hub_url, enroll_token=os.environ.get("ENROLL_TOKEN"))
+            asyncio.create_task(client.start())
+        except Exception as e:
+            pass
+
 class DeviceCommandRequest(BaseModel):
     device_id: str
     action: str
@@ -497,6 +507,7 @@ def api_get_fleet_devices():
 
 from auth import (
     authenticate_linux_or_local_user,
+    register_local_admin,
     create_access_token,
     decode_access_token,
     generate_enrollment_token,
@@ -511,6 +522,18 @@ class LoginRequest(BaseModel):
 def api_login(req: LoginRequest):
     if not authenticate_linux_or_local_user(req.username, req.password):
         raise HTTPException(status_code=401, detail="Invalid username or password")
+    token = create_access_token(req.username)
+    return {
+        "status": "success",
+        "access_token": token,
+        "token_type": "bearer",
+        "username": req.username
+    }
+
+@app.post("/api/auth/register")
+def api_register(req: LoginRequest):
+    if not register_local_admin(req.username, req.password):
+        raise HTTPException(status_code=400, detail="Failed to register account")
     token = create_access_token(req.username)
     return {
         "status": "success",

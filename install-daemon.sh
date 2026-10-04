@@ -69,7 +69,22 @@ ADMIN_USER="$INPUT_ADMIN"
 EOF
 chmod 0644 "$ENV_FILE"
 
-# 1. Create dedicated system user & group if not existing
+# 1. Automatic Python Environment Setup for new devices
+if [ ! -f "$PROJECT_DIR/backend/.venv/bin/python" ]; then
+    echo "📦 Setting up Python virtual environment on new device..."
+    if command -v uv >/dev/null 2>&1; then
+        (cd "$PROJECT_DIR/backend" && uv sync)
+    elif command -v python3 >/dev/null 2>&1; then
+        python3 -m venv "$PROJECT_DIR/backend/.venv"
+        "$PROJECT_DIR/backend/.venv/bin/pip" install -q psutil websockets fastapi uvicorn httptools pyjwt passlib
+    else
+        echo "❌ Python 3 is required on the remote machine. Please install python3."
+        exit 1
+    fi
+    echo "✓ Python virtual environment created."
+fi
+
+# 2. Create dedicated system user & group if not existing
 if ! id "$DAEMON_USER" >/dev/null 2>&1; then
     echo "👤 Creating dedicated system user '$DAEMON_USER'..."
     useradd -r -s /usr/sbin/nologin -d /var/lib/vitals-daemon -m "$DAEMON_USER"
@@ -80,13 +95,14 @@ fi
 # Add to systemd-journal and disk groups for hardware & log access
 usermod -aG systemd-journal,disk "$DAEMON_USER" 2>/dev/null || true
 
-# Grant traverse access to /home/nandhu and read access to backend for vitals-daemon user
-echo "🔑 Setting ACL permissions for '$DAEMON_USER'..."
-setfacl -m u:"$DAEMON_USER":x /home/nandhu 2>/dev/null || chmod o+x /home/nandhu
-setfacl -m u:"$DAEMON_USER":x /home/nandhu/projects 2>/dev/null || true
+# Grant traverse access to parent directories for vitals-daemon user dynamically
+PARENT_DIR="$(dirname "$PROJECT_DIR")"
+GRANDPARENT_DIR="$(dirname "$PARENT_DIR")"
+setfacl -m u:"$DAEMON_USER":x "$GRANDPARENT_DIR" 2>/dev/null || chmod o+x "$GRANDPARENT_DIR" 2>/dev/null || true
+setfacl -m u:"$DAEMON_USER":x "$PARENT_DIR" 2>/dev/null || true
 setfacl -R -m u:"$DAEMON_USER":rX "$PROJECT_DIR/backend" 2>/dev/null || chmod -R o+rX "$PROJECT_DIR/backend"
 
-# 2. Install Sudoers rule with granular least-privilege
+# 3. Install Sudoers rule with granular least-privilege
 echo "🔒 Configuring granular sudoers rules in /etc/sudoers.d/$SUDOERS_FILE..."
 cp "$PROJECT_DIR/vitals-daemon-sudoers" "/etc/sudoers.d/$SUDOERS_FILE"
 chmod 0440 "/etc/sudoers.d/$SUDOERS_FILE"
@@ -100,9 +116,34 @@ else
     exit 1
 fi
 
-# 3. Install Systemd Service Unit
+# 4. Dynamically generate Systemd Service Unit for target machine path
 echo "🚀 Installing Systemd service /etc/systemd/system/$SERVICE_NAME..."
-cp "$PROJECT_DIR/$SERVICE_NAME" "/etc/systemd/system/$SERVICE_NAME"
+cat <<EOF > "/etc/systemd/system/$SERVICE_NAME"
+[Unit]
+Description=PulseLinux System Vitals & Diagnostics Daemon
+Documentation=https://github.com/nandhu/tuxMonitor
+After=network.target
+
+[Service]
+Type=simple
+User=$DAEMON_USER
+Group=$DAEMON_USER
+WorkingDirectory=$PROJECT_DIR/backend
+EnvironmentFile=-/etc/default/pulse-vitals-daemon
+ExecStart=$PROJECT_DIR/backend/.venv/bin/uvicorn main:app --host 0.0.0.0 --port 8000 --no-access-log --workers 1
+Restart=always
+RestartSec=3
+
+# Resource Limits
+MemoryMax=120M
+MemoryHigh=100M
+CPUQuota=15%
+Nice=10
+TasksMax=50
+
+[Install]
+WantedBy=multi-user.target
+EOF
 
 systemctl daemon-reload
 echo "⚡ Enabling and starting $SERVICE_NAME..."
