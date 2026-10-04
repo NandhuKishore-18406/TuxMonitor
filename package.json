@@ -1,0 +1,12 @@
+{
+  "name": "system-vitals-monitor",
+  "version": "1.0.0",
+  "description": "Linux System Vitals Monitor & Diagnostic Suite",
+  "scripts": {
+    "start": "./start.sh",
+    "dev": "./start.sh"
+  },
+  "keywords": ["linux", "monitoring", "vitals", "diagnostics", "fastapi", "react"],
+  "author": "",
+  "license": "MIT"
+}

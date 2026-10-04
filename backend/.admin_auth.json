@@ -1,0 +1,8 @@
+{
+  "admin": {
+    "username": "admin",
+    "salt": "c94354dbc63c8fa2",
+    "password_hash": "a90e06d3a76e33e9d9081d034923dedde7e79f473a71d074e9cd1f0495d31c37",
+    "enrollment_tokens": []
+  }
+}

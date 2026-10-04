@@ -1,0 +1,487 @@
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700;800&display=swap');
+
+:root {
+  --bg-deep: #09090b;
+  --desktop-bg: #121215;
+  --window-bg: #141417;
+  --window-header-bg: #1c1c20;
+  --window-border: #27272a;
+  --window-bevel-light: #3f3f46;
+  --window-bevel-dark: #18181b;
+  
+  --text-primary: #f4f4f5;
+  --text-secondary: #a1a1aa;
+  --text-muted: #71717a;
+  --text-dim: #52525b;
+  
+  --accent-white: #ffffff;
+  --accent-zinc: #e4e4e7;
+  
+  --font-mono: 'JetBrains Mono', monospace;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  font-family: var(--font-mono) !important;
+}
+
+html, body {
+  width: 100vw;
+  height: 100vh;
+  background-color: var(--bg-deep);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  overflow: hidden;
+  user-select: none;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Retro Desktop Workspace Canvas */
+.retro-desktop {
+  width: 100vw;
+  height: calc(100vh - 38px);
+  position: relative;
+  background-color: #0d0d0f;
+  background-image:
+    linear-gradient(to right, rgba(255, 255, 255, 0.03) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(255, 255, 255, 0.03) 1px, transparent 1px);
+  background-size: 40px 40px;
+  overflow: hidden;
+  padding: 16px;
+}
+
+/* Retro Desktop Grid of Icons */
+.desktop-icon-grid {
+  display: grid;
+  grid-template-rows: repeat(auto-fill, minmax(92px, 1fr));
+  grid-auto-flow: column;
+  gap: 16px 20px;
+  height: 100%;
+  max-width: 320px;
+}
+
+.desktop-icon {
+  width: 86px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 8px 4px;
+  border-radius: 4px;
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: background 0.1s ease, border 0.1s ease;
+}
+
+.desktop-icon:hover {
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px dashed #52525b;
+}
+
+.desktop-icon.selected {
+  background: rgba(255, 255, 255, 0.12);
+  border: 1px solid #71717a;
+}
+
+.desktop-icon-symbol {
+  width: 44px;
+  height: 44px;
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 4px;
+  color: var(--text-primary);
+}
+
+.desktop-icon-label {
+  font-size: 0.68rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  text-align: center;
+  line-height: 1.2;
+  word-break: break-word;
+  padding: 2px 4px;
+  background: rgba(0, 0, 0, 0.6);
+  border-radius: 2px;
+}
+
+/* Classic Resizable Retro Window OS Layout */
+.retro-window {
+  position: absolute;
+  background: var(--window-bg);
+  border: 2px solid #3f3f46;
+  box-shadow: 4px 4px 0px rgba(0, 0, 0, 0.8);
+  border-radius: 4px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  resize: both;
+  min-width: 420px;
+  min-height: 320px;
+  max-width: 98vw;
+  max-height: calc(100vh - 50px);
+}
+
+.retro-window.maximized {
+  top: 8px !important;
+  left: 8px !important;
+  width: calc(100vw - 16px) !important;
+  height: calc(100vh - 56px) !important;
+  resize: none !important;
+}
+
+.retro-window.active {
+  border-color: #71717a;
+  box-shadow: 6px 6px 0px rgba(0, 0, 0, 0.9);
+}
+
+/* Window Title Bar */
+.window-title-bar {
+  height: 30px;
+  background: #18181b;
+  border-bottom: 1px solid #27272a;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 8px;
+  cursor: move;
+  user-select: none;
+  flex-shrink: 0;
+}
+
+.retro-window.active .window-title-bar {
+  background: #27272a;
+  color: #ffffff;
+}
+
+.window-title {
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.window-controls {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.win-btn {
+  width: 20px;
+  height: 20px;
+  background: #18181b;
+  border: 1px solid #3f3f46;
+  box-shadow: 1px 1px 0px #000000;
+  color: var(--text-primary);
+  font-size: 0.7rem;
+  font-weight: bold;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  border-radius: 2px;
+}
+
+.win-btn:hover {
+  background: #3f3f46;
+}
+
+.win-btn.close:hover {
+  background: #52525b;
+  color: #ffffff;
+}
+
+/* Window Classic Menu Strip */
+.window-menu-bar {
+  display: flex;
+  gap: 14px;
+  background: #121215;
+  border-bottom: 1px solid #27272a;
+  padding: 4px 10px;
+  font-size: 0.7rem;
+  color: var(--text-secondary);
+  flex-shrink: 0;
+}
+
+.menu-item {
+  cursor: pointer;
+}
+.menu-item:hover {
+  color: var(--text-primary);
+  text-decoration: underline;
+}
+
+/* Windows Task Manager Classic Tab Strip */
+.tm-tab-strip {
+  display: flex;
+  gap: 2px;
+  background: #09090b;
+  padding: 6px 8px 0 8px;
+  border-bottom: 1px solid #27272a;
+  overflow-x: auto;
+  flex-shrink: 0;
+}
+
+.tm-tab-btn {
+  padding: 5px 12px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  background: #141417;
+  border: 1px solid #27272a;
+  border-bottom: none;
+  color: var(--text-secondary);
+  border-radius: 3px 3px 0 0;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.tm-tab-btn:hover {
+  color: var(--text-primary);
+  background: #1c1c20;
+}
+
+.tm-tab-btn.active {
+  background: #18181b;
+  border-color: #52525b;
+  color: #ffffff;
+  font-weight: 700;
+  border-bottom: 2px solid #ffffff;
+}
+
+/* Windows Task Manager Frame Box */
+.tm-frame-box {
+  border: 1px solid #27272a;
+  background: #09090b;
+  border-radius: 3px;
+  padding: 10px;
+  margin-bottom: 10px;
+}
+
+.tm-frame-title {
+  font-size: 0.68rem;
+  font-weight: 700;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-bottom: 6px;
+}
+
+/* Windows Task Manager Bottom Status Bar */
+.tm-status-bar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  background: #18181b;
+  border-top: 1px solid #27272a;
+  padding: 4px 10px;
+  font-size: 0.7rem;
+  color: var(--text-secondary);
+  flex-shrink: 0;
+}
+
+.tm-status-item {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.tm-status-item strong {
+  color: var(--text-primary);
+}
+
+/* Window Body Content Area */
+.window-body {
+  flex: 1;
+  padding: 12px;
+  overflow: auto;
+  background: #141417;
+  color: var(--text-primary);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+}
+
+.window-body > div {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
+/* Retro Taskbar & Start Menu */
+.retro-taskbar {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  width: 100vw;
+  height: 38px;
+  background: #18181b;
+  border-top: 2px solid #27272a;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 8px;
+  z-index: 1000;
+}
+
+.start-button {
+  height: 28px;
+  padding: 0 12px;
+  background: #27272a;
+  border: 2px solid #3f3f46;
+  box-shadow: 1px 1px 0px #000000;
+  color: var(--text-primary);
+  font-size: 0.75rem;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  border-radius: 3px;
+}
+
+.start-button:hover {
+  background: #3f3f46;
+}
+
+.start-menu {
+  position: absolute;
+  bottom: 42px;
+  left: 8px;
+  width: 220px;
+  background: #18181b;
+  border: 2px solid #3f3f46;
+  box-shadow: 4px 4px 0px rgba(0, 0, 0, 0.9);
+  border-radius: 4px;
+  padding: 6px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  z-index: 1001;
+}
+
+.start-menu-header {
+  padding: 6px 12px;
+  font-size: 0.7rem;
+  font-weight: 800;
+  color: var(--text-muted);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  border-bottom: 1px solid #27272a;
+  margin-bottom: 4px;
+}
+
+.start-menu-item {
+  padding: 6px 12px;
+  font-size: 0.75rem;
+  color: var(--text-primary);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.start-menu-item:hover {
+  background: #27272a;
+  color: #ffffff;
+}
+
+.taskbar-apps {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  margin: 0 12px;
+  overflow-x: auto;
+}
+
+.taskbar-tab {
+  height: 26px;
+  padding: 0 10px;
+  background: #121215;
+  border: 1px solid #27272a;
+  color: var(--text-secondary);
+  font-size: 0.7rem;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  border-radius: 3px;
+  max-width: 170px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.taskbar-tab.active {
+  background: #27272a;
+  border-color: #52525b;
+  color: var(--text-primary);
+}
+
+.system-tray {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 8px;
+  border-left: 1px solid #27272a;
+  font-size: 0.72rem;
+  color: var(--text-secondary);
+}
+
+/* Monospace tables & ASCII UI */
+.retro-table {
+  width: 100%;
+  border-collapse: collapse;
+  text-align: left;
+  font-size: 0.78rem;
+  font-family: var(--font-mono);
+}
+
+.retro-table th {
+  padding: 6px 8px;
+  color: var(--text-muted);
+  font-weight: 700;
+  text-transform: uppercase;
+  font-size: 0.68rem;
+  letter-spacing: 0.06em;
+  border-bottom: 2px solid #27272a;
+  background: #18181b;
+}
+
+.retro-table td {
+  padding: 6px 8px;
+  border-bottom: 1px solid #1c1c20;
+}
+
+.retro-table tr:hover {
+  background: #1c1c20;
+}
+
+/* Custom Scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: #09090b;
+}
+::-webkit-scrollbar-thumb {
+  background: #27272a;
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #3f3f46;
+}

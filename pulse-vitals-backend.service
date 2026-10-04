@@ -1,0 +1,24 @@
+[Unit]
+Description=PulseLinux System Vitals & Diagnostics Daemon
+Documentation=https://github.com/nandhu/tuxMonitor
+After=network.target
+
+[Service]
+Type=simple
+User=vitals-daemon
+Group=vitals-daemon
+WorkingDirectory=/home/nandhu/projects/system-vitals-monitor/backend
+EnvironmentFile=-/etc/default/pulse-vitals-daemon
+ExecStart=/home/nandhu/projects/system-vitals-monitor/backend/.venv/bin/uvicorn main:app --host 0.0.0.0 --port 8000 --no-access-log --workers 1
+Restart=always
+RestartSec=3
+
+# Resource Limits to ensure daemon remains lightweight & low memory footprint
+MemoryMax=120M
+MemoryHigh=100M
+CPUQuota=15%
+Nice=10
+TasksMax=50
+
+[Install]
+WantedBy=multi-user.target
