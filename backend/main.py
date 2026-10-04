@@ -483,14 +483,15 @@ async def startup_event():
     dev.latest_vitals = get_vitals_snapshot()
 
     # If HUB_URL is set to a remote master hub, auto-connect background agent client
-    hub_url = os.environ.get("HUB_URL")
+    hub_url = (os.environ.get("HUB_URL") or "").strip(' "\'')
+    enroll_token = (os.environ.get("ENROLL_TOKEN") or "").strip(' "\'')
     if hub_url and "127.0.0.1" not in hub_url and "localhost" not in hub_url:
         try:
             from agent_client import AgentClient
-            client = AgentClient(hub_url=hub_url, enroll_token=os.environ.get("ENROLL_TOKEN"))
+            client = AgentClient(hub_url=hub_url, enroll_token=enroll_token)
             asyncio.create_task(client.start())
         except Exception as e:
-            pass
+            print(f"AgentClient background start error: {e}")
 
 class DeviceCommandRequest(BaseModel):
     device_id: str

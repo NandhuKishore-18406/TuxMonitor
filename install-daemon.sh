@@ -63,9 +63,9 @@ echo ""
 # Write configuration to /etc/default/pulse-vitals-daemon
 mkdir -p /etc/default
 cat <<EOF > "$ENV_FILE"
-HUB_URL="$INPUT_HUB_URL"
-ENROLL_TOKEN="$INPUT_TOKEN"
-ADMIN_USER="$INPUT_ADMIN"
+HUB_URL=$INPUT_HUB_URL
+ENROLL_TOKEN=$INPUT_TOKEN
+ADMIN_USER=$INPUT_ADMIN
 EOF
 chmod 0644 "$ENV_FILE"
 

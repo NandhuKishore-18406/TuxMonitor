@@ -65,8 +65,10 @@ def get_device_ip() -> str:
 
 class AgentClient:
     def __init__(self, hub_url: str = None, enroll_token: str = None):
-        self.hub_url = hub_url or os.environ.get("HUB_URL", "ws://127.0.0.1:8000")
-        self.enroll_token = enroll_token or os.environ.get("ENROLL_TOKEN", "")
+        raw_hub = hub_url or os.environ.get("HUB_URL") or "ws://127.0.0.1:8000"
+        raw_token = enroll_token or os.environ.get("ENROLL_TOKEN") or ""
+        self.hub_url = raw_hub.strip(' "\'')
+        self.enroll_token = raw_token.strip(' "\'')
         self.device_id = get_or_create_device_id()
         self.running = True
 
