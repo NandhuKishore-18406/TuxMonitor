@@ -1,3 +1,4 @@
 # Granular Least-Privilege Sudoers Rule for PulseLinux Vitals Daemon
 vitals-daemon ALL=(ALL) NOPASSWD: /usr/sbin/smartctl, /usr/bin/smartctl, /usr/bin/systemctl restart *, /usr/bin/systemctl mask *, /usr/bin/systemctl unmask *, /usr/bin/systemctl stop *, /usr/bin/systemctl reset-failed *, /usr/bin/journalctl --vacuum-time=*, /usr/bin/dmesg --level=*, /usr/sbin/ufw status, /usr/bin/ufw status, /usr/bin/paccache *, /usr/bin/pacman -Sc --noconfirm, /usr/bin/apt-get clean, /usr/bin/dnf clean *, /usr/bin/du -h -d 1 --one-file-system *, /bin/du -h -d 1 --one-file-system *
 
+

@@ -35,7 +35,9 @@ class AdminUserDB(Base):
     __tablename__ = "admin_users"
     id = Column(String, primary_key=True)
     username = Column(String, unique=True, index=True)
-    email = Column(String, index=True)
+    email = Column(String, index=True, nullable=True)
+    password_hash = Column(String, nullable=True)
+    salt = Column(String, nullable=True)
     clerk_id = Column(String, index=True, nullable=True)
     role = Column(String, default="admin")
     created_at = Column(BigInteger, default=lambda: int(time.time()))
@@ -306,6 +308,90 @@ async def db_sync_clerk_user(clerk_id: str, email: str, username: str = None, ro
 
     return user_data
 
+async def db_register_admin_user(username: str, password_hash: str, salt: str, email: str = None, role: str = "admin") -> bool:
+    """Registers a new admin user account in Neon PostgreSQL DB."""
+    if not AsyncSessionLocal:
+        return False
+    try:
+        async with AsyncSessionLocal() as session:
+            async with session.begin():
+                from sqlalchemy import select
+                stmt = select(AdminUserDB).where(AdminUserDB.username == username)
+                res = await session.execute(stmt)
+                existing = res.scalars().first()
+                if existing:
+                    existing.password_hash = password_hash
+                    existing.salt = salt
+                    existing.role = role
+                    if email:
+                        existing.email = email
+                else:
+                    new_user = AdminUserDB(
+                        id=f"adm-{secrets.token_hex(8)}",
+                        username=username,
+                        email=email or f"{username}@local",
+                        password_hash=password_hash,
+                        salt=salt,
+                        role=role,
+                        created_at=int(time.time())
+                    )
+                    session.add(new_user)
+        logger.info(f"Neon DB: Registered/Updated admin user account: {username}")
+        return True
+    except Exception as e:
+        logger.error(f"Error registering admin user in Neon DB: {e}")
+        return False
+
+async def db_authenticate_admin_user(username: str) -> Optional[Dict[str, Any]]:
+    """Fetches user credentials from Neon PostgreSQL DB for authentication."""
+    if not AsyncSessionLocal:
+        return None
+    try:
+        async with AsyncSessionLocal() as session:
+            from sqlalchemy import select
+            stmt = select(AdminUserDB).where(AdminUserDB.username == username)
+            res = await session.execute(stmt)
+            u = res.scalars().first()
+            if u:
+                return {
+                    "id": u.id,
+                    "username": u.username,
+                    "password_hash": u.password_hash,
+                    "salt": u.salt,
+                    "role": u.role or "admin"
+                }
+    except Exception as e:
+        logger.error(f"Error querying admin user in Neon DB: {e}")
+    return None
+
+async def db_get_devices_for_owner(owner_admin: str) -> List[Dict[str, Any]]:
+    """Fetches all registered devices owned by an admin from Neon DB."""
+    devices = []
+    if not AsyncSessionLocal:
+        return devices
+    try:
+        async with AsyncSessionLocal() as session:
+            from sqlalchemy import select
+            # 'admin' or master role can see all devices, regular admins see their owned devices
+            if owner_admin.lower() in ["admin", "root", "master", "pulse-admin"]:
+                stmt = select(DeviceDB)
+            else:
+                stmt = select(DeviceDB).where(DeviceDB.owner_admin == owner_admin)
+            res = await session.execute(stmt)
+            records = res.scalars().all()
+            for d in records:
+                devices.append({
+                    "device_id": d.device_id,
+                    "hostname": d.hostname,
+                    "ip": d.ip,
+                    "distro_name": d.distro_name,
+                    "distro_id": d.distro_id,
+                    "owner_admin": d.owner_admin,
+                    "status": d.status,
+                    "last_seen": d.last_seen
+                })
+    except Exception as e:
+        logger.error(f"Error fetching devices for owner from Neon DB: {e}")
 async def db_get_all_admin_users() -> List[Dict[str, Any]]:
     """Fetches all registered users from Neon DB."""
     users = []
@@ -328,4 +414,5 @@ async def db_get_all_admin_users() -> List[Dict[str, Any]]:
         except Exception as e:
             logger.error(f"Error fetching users from Neon DB: {e}")
     return users
+
 

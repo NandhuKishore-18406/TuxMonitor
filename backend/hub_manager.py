@@ -70,6 +70,11 @@ class FleetHubManager:
             dev.latest_vitals = snapshot
             dev.last_seen = time.time()
 
+    def mark_device_offline(self, device_id: str):
+        if device_id in self.devices:
+            self.devices[device_id].websocket = None
+            self.devices[device_id].last_seen = 0.0
+
     def remove_device(self, device_id: str):
         if device_id in self.devices:
             del self.devices[device_id]
