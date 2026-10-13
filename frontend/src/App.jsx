@@ -144,17 +144,26 @@ export default function App() {
   // Periodic polling for pending ping requests & fleet summary
   useEffect(() => {
     if (!adminToken) return;
-    const fetchPending = async () => {
+    const fetchPendingAndFleet = async () => {
       try {
-        const res = await fetch('/api/fleet/pending-requests');
-        if (res.ok) {
-          const d = await res.json();
+        const [pRes, fRes] = await Promise.all([
+          fetch('/api/fleet/pending-requests'),
+          fetch('/api/fleet/summary')
+        ]);
+        if (pRes.ok) {
+          const d = await pRes.json();
           setPendingRequests(d.pending_requests || []);
+        }
+        if (fRes.ok) {
+          const s = await fRes.json();
+          if (s && typeof s.online_count === 'number') {
+            setFleetSummary(s);
+          }
         }
       } catch (e) {}
     };
-    fetchPending();
-    const interval = setInterval(fetchPending, 4000);
+    fetchPendingAndFleet();
+    const interval = setInterval(fetchPendingAndFleet, 3000);
     return () => clearInterval(interval);
   }, [adminToken]);
 

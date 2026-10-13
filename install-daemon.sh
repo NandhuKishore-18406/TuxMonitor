@@ -25,15 +25,12 @@ for arg in "$@"; do
     case $arg in
         --hub-url=*)
             INPUT_HUB_URL="${arg#*=}"
-            shift
             ;;
         --token=*)
             INPUT_TOKEN="${arg#*=}"
-            shift
             ;;
         --admin=*)
             INPUT_ADMIN="${arg#*=}"
-            shift
             ;;
     esac
 done
@@ -82,6 +79,11 @@ if [ ! -f "$PROJECT_DIR/backend/.venv/bin/python" ]; then
         exit 1
     fi
     echo "✓ Python virtual environment created."
+else
+    # Ensure required packages exist in existing venv
+    if [ -f "$PROJECT_DIR/backend/.venv/bin/pip" ]; then
+        "$PROJECT_DIR/backend/.venv/bin/pip" install -q psutil websockets fastapi uvicorn httptools pyjwt passlib python-dotenv sqlalchemy asyncpg greenlet 2>/dev/null || true
+    fi
 fi
 
 # 2. Create dedicated system user & group if not existing

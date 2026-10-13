@@ -89,7 +89,14 @@ class AgentClient:
     def __init__(self, hub_url: str = None, enroll_token: str = None):
         raw_hub = hub_url or os.environ.get("HUB_URL") or "ws://127.0.0.1:15000"
         raw_token = enroll_token or os.environ.get("ENROLL_TOKEN") or get_persisted_token()
-        self.hub_url = raw_hub.strip(' "\'')
+        hub = raw_hub.strip(' "\'')
+        if hub.startswith("http://"):
+            hub = "ws://" + hub[7:]
+        elif hub.startswith("https://"):
+            hub = "wss://" + hub[8:]
+        elif not (hub.startswith("ws://") or hub.startswith("wss://")):
+            hub = f"ws://{hub}"
+        self.hub_url = hub.rstrip('/')
         self.enroll_token = raw_token.strip(' "\'')
         if self.enroll_token:
             persist_device_token(self.enroll_token)
