@@ -184,6 +184,14 @@ class FleetHubManager:
         self.pairing_requests[req_id]["status"] = "rejected"
         return True
 
+    def is_valid_paired_token(self, token: str) -> bool:
+        if not hasattr(self, "pairing_requests") or not token:
+            return False
+        for req in self.pairing_requests.values():
+            if req.get("status") == "approved" and req.get("token") == token:
+                return True
+        return False
+
     # --- CHAT & NOTIFICATION STORE ---
     def add_chat_message(self, device_id: str, sender: str, text: str, is_admin: bool = False, is_alert: bool = False) -> Dict[str, Any]:
         if not hasattr(self, "chat_messages"):

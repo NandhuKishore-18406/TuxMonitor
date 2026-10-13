@@ -3,9 +3,11 @@ import time
 import secrets
 import logging
 from typing import Dict, Any, List, Optional
-from dotenv import load_dotenv
-
-load_dotenv()
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
 
 logger = logging.getLogger("database")
 

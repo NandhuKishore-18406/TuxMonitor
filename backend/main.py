@@ -1216,6 +1216,9 @@ async def websocket_agent_stream(websocket: WebSocket, device_id: str, token: st
                 otp_res = await db_verify_and_consume_otp(token)
                 if otp_res:
                     owner_admin = otp_res[0]
+            # 5. Check if token is an approved ping pairing request token
+            if not owner_admin and fleet_hub.is_valid_paired_token(token):
+                owner_admin = "admin"
 
     if not owner_admin:
         # Reject unauthorized device connection

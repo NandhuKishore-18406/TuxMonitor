@@ -76,7 +76,7 @@ if [ ! -f "$PROJECT_DIR/backend/.venv/bin/python" ]; then
         (cd "$PROJECT_DIR/backend" && uv sync)
     elif command -v python3 >/dev/null 2>&1; then
         python3 -m venv "$PROJECT_DIR/backend/.venv"
-        "$PROJECT_DIR/backend/.venv/bin/pip" install -q psutil websockets fastapi uvicorn httptools pyjwt passlib
+        "$PROJECT_DIR/backend/.venv/bin/pip" install -q psutil websockets fastapi uvicorn httptools pyjwt passlib python-dotenv sqlalchemy asyncpg greenlet
     else
         echo "❌ Python 3 is required on the remote machine. Please install python3."
         exit 1
@@ -122,6 +122,15 @@ if command -v ufw >/dev/null 2>&1; then
     ufw allow 15000/tcp comment "PulseLinux System Vitals Hub" 2>/dev/null || true
 fi
 
+# If HUB_URL points to a remote server (not localhost/127.0.0.1), run agent_client.py
+if [[ "$INPUT_HUB_URL" != *"127.0.0.1"* && "$INPUT_HUB_URL" != *"localhost"* ]]; then
+    DAEMON_EXEC="$PROJECT_DIR/backend/.venv/bin/python agent_client.py"
+    echo "🔗 Mode: REMOTE AGENT (will connect and stream telemetry to Master Hub at $INPUT_HUB_URL)"
+else
+    DAEMON_EXEC="$PROJECT_DIR/backend/.venv/bin/uvicorn main:app --host 0.0.0.0 --port 15000 --no-access-log --workers 1"
+    echo "👑 Mode: MASTER HUB (running FastAPI server & fleet manager)"
+fi
+
 # 4. Dynamically generate Systemd Service Unit for target machine path
 echo "🚀 Installing Systemd service /etc/systemd/system/$SERVICE_NAME..."
 cat <<EOF > "/etc/systemd/system/$SERVICE_NAME"
@@ -136,7 +145,7 @@ User=$DAEMON_USER
 Group=$DAEMON_USER
 WorkingDirectory=$PROJECT_DIR/backend
 EnvironmentFile=-/etc/default/pulse-vitals-daemon
-ExecStart=$PROJECT_DIR/backend/.venv/bin/uvicorn main:app --host 0.0.0.0 --port 15000 --no-access-log --workers 1
+ExecStart=$DAEMON_EXEC
 Restart=always
 RestartSec=3
 
