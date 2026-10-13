@@ -9,12 +9,13 @@ import websockets
 from typing import Dict, Any
 
 from main import get_vitals_snapshot, get_os_details
-from diagnostics import attempt_service_fix, vacuum_journal_logs
+from diagnostics import attempt_service_fix, vacuum_journal_logs, clean_package_cache
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("agent_client")
 
 DEVICE_ID_FILE = os.path.join(os.path.dirname(__file__), ".device_id")
+DEVICE_TOKEN_FILE = os.path.join(os.path.dirname(__file__), ".device_token")
 
 def get_or_create_device_id() -> str:
     """Gets or generates a unique, persistent Device ID for this machine."""
@@ -52,6 +53,27 @@ def get_or_create_device_id() -> str:
 
     return new_id
 
+def get_persisted_token() -> str:
+    """Retrieves saved device enrollment token if present."""
+    if os.path.exists(DEVICE_TOKEN_FILE):
+        try:
+            with open(DEVICE_TOKEN_FILE, "r") as f:
+                tok = f.read().strip()
+                if tok:
+                    return tok
+        except Exception:
+            pass
+    return ""
+
+def persist_device_token(token: str):
+    """Saves device enrollment token for seamless reboots."""
+    if token:
+        try:
+            with open(DEVICE_TOKEN_FILE, "w") as f:
+                f.write(token.strip())
+        except Exception:
+            pass
+
 def get_device_ip() -> str:
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -65,10 +87,12 @@ def get_device_ip() -> str:
 
 class AgentClient:
     def __init__(self, hub_url: str = None, enroll_token: str = None):
-        raw_hub = hub_url or os.environ.get("HUB_URL") or "ws://127.0.0.1:8000"
-        raw_token = enroll_token or os.environ.get("ENROLL_TOKEN") or ""
+        raw_hub = hub_url or os.environ.get("HUB_URL") or "ws://127.0.0.1:15000"
+        raw_token = enroll_token or os.environ.get("ENROLL_TOKEN") or get_persisted_token()
         self.hub_url = raw_hub.strip(' "\'')
         self.enroll_token = raw_token.strip(' "\'')
+        if self.enroll_token:
+            persist_device_token(self.enroll_token)
         self.device_id = get_or_create_device_id()
         self.running = True
 
@@ -112,10 +136,14 @@ class AgentClient:
 
                                 if action == "fix_service":
                                     unit = payload.get("unit_name", "")
+                                    act = payload.get("action", "restart")
                                     if unit:
-                                        attempt_service_fix(unit)
+                                        attempt_service_fix(unit, action=act)
                                 elif action == "vacuum_journal":
                                     vacuum_journal_logs()
+                                elif action == "clean_pkg_cache":
+                                    kv = payload.get("keep_versions", 2)
+                                    clean_package_cache(keep_versions=kv)
                             except Exception as e:
                                 logger.error(f"Error handling remote command: {e}")
 

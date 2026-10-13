@@ -39,14 +39,17 @@ def check_missing_drivers():
                 "description": f"Kernel requested firmware '{fw}' but it was not found in /lib/firmware.",
                 "solution": "Install 'linux-firmware' or vendor specific package via apt/pacman/dnf."
             })
-        if "nvidia" in dmesg_out.lower() and "failed" in dmesg_out.lower():
-            issues.append({
-                "category": "Missing Drivers / Firmware",
-                "severity": "medium",
-                "title": "NVIDIA Driver Warning",
-                "description": "NVIDIA driver kernel module reported errors or failed initialization during boot.",
-                "solution": "Verify proprietary NVIDIA drivers are correctly compiled against current kernel."
-            })
+        for line in dmesg_out.splitlines():
+            line_lower = line.lower()
+            if "nvidia" in line_lower and ("failed" in line_lower or "error" in line_lower):
+                issues.append({
+                    "category": "Missing Drivers / Firmware",
+                    "severity": "medium",
+                    "title": "NVIDIA Driver Warning",
+                    "description": f"Kernel reported NVIDIA initialization issues: {line.strip()[:110]}",
+                    "solution": "Verify proprietary NVIDIA drivers are correctly compiled against current kernel."
+                })
+                break
     
     if shutil.which("lspci"):
         lspci_out, _, _ = run_command_safe(["lspci", "-nnk"])
@@ -94,9 +97,9 @@ def check_kernel_oom_logs():
     """Checks for Out-Of-Memory (OOM) killer terminations in system log."""
     issues = []
     if shutil.which("journalctl"):
-        out, _, _ = run_command_safe(["journalctl", "-k", "-g", "Out of memory", "-n", "10", "--no-pager"])
-        if out:
-            lines = [l for l in out.splitlines() if l.strip()]
+        out, _, ret = run_command_safe(["journalctl", "-k", "-g", "Out of memory", "-n", "10", "--no-pager"])
+        if ret == 0 and out:
+            lines = [l for l in out.splitlines() if l.strip() and not l.strip().startswith("--")]
             if lines:
                 issues.append({
                     "category": "Memory & Kernel",
@@ -181,6 +184,50 @@ def vacuum_journal_logs() -> tuple:
         return True, f"Journal logs cleaned: {out or 'Success'}"
     else:
         return False, f"Failed: {err or out}"
+
+def clean_package_cache(keep_versions: int = 2) -> tuple:
+    """Cleans package cache (pacman/paccache or apt)."""
+    messages = []
+    errors = []
+    success = False
+    
+    # Arch Linux / Pacman
+    if shutil.which("paccache"):
+        out, err, ret = run_privileged_command(["paccache", f"-rk{keep_versions}"])
+        if ret == 0 or (out and "candidates" in out):
+            messages.append(out or f"paccache retained {keep_versions} versions")
+            success = True
+        else:
+            errors.append(err or out or "paccache command error")
+    elif shutil.which("pacman"):
+        out, err, ret = run_privileged_command(["pacman", "-Sc", "--noconfirm"])
+        if ret == 0 or out:
+            messages.append(out or "pacman cache cleared")
+            success = True
+        else:
+            errors.append(err or out or "pacman command error")
+
+    # Debian / Ubuntu / Apt
+    if shutil.which("apt-get"):
+        out, err, ret = run_privileged_command(["apt-get", "clean"])
+        if ret == 0:
+            messages.append("apt package cache cleaned")
+            success = True
+        else:
+            errors.append(err or out or "apt-get clean error")
+    elif shutil.which("dnf"):
+        out, err, ret = run_privileged_command(["dnf", "clean", "packages", "-y"])
+        if ret == 0:
+            messages.append("dnf package cache cleaned")
+            success = True
+        else:
+            errors.append(err or out or "dnf clean error")
+
+    if success:
+        return True, " | ".join(messages) if messages else "Package cache cleaned successfully"
+    if errors:
+        return False, f"Failed: {'; '.join(errors)}. Run 'sudo cp vitals-daemon-sudoers /etc/sudoers.d/vitals-daemon' to grant permission."
+    return False, "No package cache cleaner available or permission denied"
 
 def get_active_listening_ports() -> List[Dict[str, Any]]:
     """Retrieves all active listening network sockets (IPv4 & IPv6) mapped to process names."""
@@ -290,14 +337,36 @@ def run_full_diagnostic_suite():
         "status": "healthy" if len(all_issues) == 0 else "warnings_found"
     }
 
-def attempt_service_fix(unit_name):
-    """Attempts to restart a failed systemd service."""
+def attempt_service_fix(unit_name: str, action: str = "restart") -> tuple:
+    """Attempts to restart, mask, reset, or stop a failed systemd service."""
     if not shutil.which("systemctl"):
         return False, "systemctl is not available"
-    out, err, ret = run_privileged_command(["systemctl", "restart", unit_name])
-    if ret == 0 or "started" in (out + err).lower():
-        return True, f"Successfully restarted service {unit_name}"
-    else:
+    
+    clean_unit = re.sub(r'[^a-zA-Z0-9_\-\.@]', '', unit_name.strip())
+    if not clean_unit:
+        return False, "Invalid service unit name"
+
+    if action == "mask":
+        out, err, ret = run_privileged_command(["systemctl", "mask", clean_unit])
+        run_privileged_command(["systemctl", "stop", clean_unit])
+        run_privileged_command(["systemctl", "reset-failed", clean_unit])
+        if ret == 0 or "created symlink" in (out + err).lower():
+            return True, f"Successfully masked and stopped {clean_unit} (resolved conflict)"
+        return False, f"Failed to mask service: {err or out}"
+    elif action == "reset-failed":
+        out, err, ret = run_privileged_command(["systemctl", "reset-failed", clean_unit])
+        return ret == 0, f"Reset failed status: {err or out}"
+    elif action == "stop":
+        out, err, ret = run_privileged_command(["systemctl", "stop", clean_unit])
+        return ret == 0, f"Stopped service {clean_unit}: {err or out}"
+    else:  # "restart"
+        cmd = ["systemctl", "restart"]
+        if clean_unit.startswith("pulse-vitals-backend"):
+            cmd.append("--no-block")
+        cmd.append(clean_unit)
+        out, err, ret = run_privileged_command(cmd)
+        if ret == 0 or "started" in (out + err).lower():
+            return True, f"Successfully restarted service {clean_unit}"
         return False, f"Failed to restart service: {err or out}"
 
 def strip_ansi(text: str) -> str:
@@ -358,66 +427,67 @@ def get_df_info() -> List[Dict[str, Any]]:
             
     return filesystems
 
-def get_du_info(target_path: str = None) -> Dict[str, Any]:
-    """Runs du -sh on directory items with fast fallback scanning."""
-    if not target_path or target_path.strip() == "":
-        target_path = os.path.expanduser("~")
-    else:
-        target_path = os.path.expanduser(target_path.strip())
-    
-    if not os.path.exists(target_path):
-        return {"error": f"Path does not exist: {target_path}", "path": target_path, "items": []}
-        
-    items = []
-    if shutil.which("du"):
+def get_default_du_path() -> str:
+    """Finds the sensible default directory for du analysis (user home or /home)."""
+    for user_env in [os.environ.get("SUDO_USER"), os.environ.get("USER"), "nandhu"]:
+        if user_env and os.path.isdir(f"/home/{user_env}"):
+            return f"/home/{user_env}"
+    if os.path.isdir("/home"):
         try:
-            if os.path.isdir(target_path):
-                entries = os.listdir(target_path)
-                sub_paths = [os.path.join(target_path, e) for e in entries[:40]]
-                if sub_paths:
-                    out, _, ret = run_command_safe(["du", "-sh"] + sub_paths, timeout=4)
-                    out = strip_ansi(out)
-                    if out:
-                        for line in out.splitlines():
-                            parts = line.split("\t")
-                            if len(parts) < 2:
-                                parts = line.split(maxsplit=1)
-                            if len(parts) == 2:
-                                size_str, item_path = parts[0].strip(), parts[1].strip()
-                                item_name = os.path.basename(item_path) or item_path
-                                items.append({
-                                    "size": size_str,
-                                    "path": item_path,
-                                    "name": item_name
-                                })
-            else:
-                out, _, _ = run_command_safe(["du", "-sh", target_path], timeout=3)
-                out = strip_ansi(out)
-                if out:
-                    parts = out.split(maxsplit=1)
-                    if len(parts) == 2:
-                        items.append({"size": parts[0].strip(), "path": parts[1].strip(), "name": os.path.basename(parts[1].strip())})
+            subdirs = [os.path.join("/home", d) for d in os.listdir("/home") if os.path.isdir(os.path.join("/home", d)) and not d.startswith(".")]
+            if subdirs:
+                return subdirs[0]
         except Exception:
             pass
+        return "/home"
+    return "/"
 
-    # Fallback scanning if items list is empty
-    if not items and os.path.isdir(target_path):
-        try:
-            for entry in os.scandir(target_path):
-                try:
-                    st = entry.stat(follow_symlinks=False)
-                    size_bytes = st.st_size
-                    if size_bytes >= 1024**3:
-                        s_str = f"{round(size_bytes / (1024**3), 1)}G"
-                    elif size_bytes >= 1024**2:
-                        s_str = f"{round(size_bytes / (1024**2), 1)}M"
-                    else:
-                        s_str = f"{round(size_bytes / 1024, 1)}K"
-                    items.append({"size": s_str, "path": entry.path, "name": entry.name, "size_mb": size_bytes / (1024**2)})
-                except Exception:
-                    pass
-        except Exception:
-            pass
+def get_du_info(target_path: str = None, excluded_paths: List[str] = None) -> Dict[str, Any]:
+    """Runs du inspection with breadcrumbs and client privacy exclusion support."""
+    if not target_path or target_path.strip() in ("", "~"):
+        target_path = get_default_du_path()
+    else:
+        target_path = os.path.abspath(os.path.expanduser(target_path.strip()))
+
+    norm_excluded = []
+    if excluded_paths:
+        for p in excluded_paths:
+            if p and isinstance(p, str):
+                norm_excluded.append(os.path.abspath(os.path.expanduser(p.strip())))
+
+    # If the target path itself is excluded by client settings
+    if any(target_path == ex or target_path.startswith(ex + os.sep) for ex in norm_excluded):
+        return {
+            "error": f"Path '{target_path}' is excluded by client privacy settings.",
+            "path": target_path,
+            "parent_path": os.path.dirname(target_path) if target_path != "/" else None,
+            "breadcrumbs": [{"name": "root", "path": "/"}],
+            "total_items": 0,
+            "items": [],
+            "is_excluded": True
+        }
+
+    if not os.path.exists(target_path):
+        return {
+            "error": f"Path does not exist: {target_path}",
+            "path": target_path,
+            "parent_path": "/",
+            "breadcrumbs": [],
+            "total_items": 0,
+            "items": []
+        }
+
+    parent_path = os.path.dirname(target_path) if target_path != "/" else None
+
+    # Compute breadcrumbs
+    bparts = [p for p in target_path.split(os.sep) if p]
+    breadcrumbs = [{"name": "root", "path": "/"}]
+    curr_acc = ""
+    for part in bparts:
+        curr_acc += "/" + part
+        breadcrumbs.append({"name": part, "path": curr_acc})
+
+    items = []
 
     def parse_size_to_mb(size_str):
         if not size_str: return 0.0
@@ -425,19 +495,142 @@ def get_du_info(target_path: str = None) -> Dict[str, Any]:
         if not match: return 0.0
         val = float(match.group(1))
         unit = match.group(2).upper()
-        if unit == 'G': return val * 1024.0
         if unit == 'T': return val * 1024.0 * 1024.0
+        if unit == 'G': return val * 1024.0
         if unit == 'M': return val
         if unit == 'K': return val / 1024.0
         return val / (1024.0 * 1024.0)
 
-    for item in items:
-        if "size_mb" not in item:
-            item["size_mb"] = parse_size_to_mb(item["size"])
-        
+    # Method 1: Run `du -h -d 1 --one-file-system` in a thread with a 30s timeout.
+    # --one-file-system skips bind-mounts (btrfs subvolumes etc.) that cause huge slowdowns.
+    # If the daemon lacks read permission, retry with `sudo -n` (requires sudoers entry).
+    if shutil.which("du") and os.path.isdir(target_path):
+        import threading
+        du_result = {"out": "", "ret": -1}
+
+        # Check if we can read the target directory at all
+        can_read = os.access(target_path, os.R_OK | os.X_OK)
+
+        def _run_du():
+            cmd = ["du", "-h", "-d", "1", "--one-file-system", target_path]
+            # If we can't read the path, escalate via sudo -n (non-interactive)
+            if not can_read and shutil.which("sudo"):
+                cmd = ["sudo", "-n"] + cmd
+            try:
+                res = subprocess.run(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    timeout=30
+                )
+                du_result["out"] = res.stdout.strip()
+                du_result["ret"] = res.returncode
+
+                # If non-sudo du produced nothing and sudo is available, try with sudo -n
+                if not du_result["out"] and "sudo" not in cmd and shutil.which("sudo"):
+                    res_sudo = subprocess.run(
+                        ["sudo", "-n"] + cmd,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        text=True,
+                        timeout=30
+                    )
+                    if res_sudo.stdout.strip():
+                        du_result["out"] = res_sudo.stdout.strip()
+                        du_result["ret"] = res_sudo.returncode
+            except subprocess.TimeoutExpired:
+                du_result["ret"] = -2
+            except Exception:
+                du_result["ret"] = -1
+
+        t = threading.Thread(target=_run_du, daemon=True)
+        t.start()
+        t.join(timeout=32)
+
+        raw_out = strip_ansi(du_result["out"])
+        # GNU du exits with 1 if any sub-item had permission issues, but still produces valid stdout
+        if raw_out and du_result["ret"] in (0, 1):
+            for line in raw_out.splitlines():
+                parts_line = line.split("\t")
+                if len(parts_line) < 2:
+                    parts_line = line.split(maxsplit=1)
+                if len(parts_line) == 2:
+                    size_str, item_path = parts_line[0].strip(), parts_line[1].strip()
+                    if os.path.abspath(item_path) == os.path.abspath(target_path):
+                        continue
+                    item_name = os.path.basename(item_path) or item_path
+                    is_dir = os.path.isdir(item_path)
+                    items.append({
+                        "size": size_str,
+                        "path": item_path,
+                        "name": item_name,
+                        "is_dir": is_dir,
+                        "size_mb": parse_size_to_mb(size_str)
+                    })
+
+    # Method 2: scandir fallback if du gave nothing.
+    # Shows immediate children with best-effort sizes (files: stat, dirs: du -s per entry).
+    if not items and os.path.isdir(target_path):
+        try:
+            entries = list(os.scandir(target_path))
+        except PermissionError:
+            entries = []
+
+        for entry in entries:
+            try:
+                is_d = entry.is_dir(follow_symlinks=False)
+                if is_d:
+                    try:
+                        res = subprocess.run(
+                            ["du", "-sh", "--one-file-system", entry.path],
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            text=True, timeout=5
+                        )
+                        line = strip_ansi(res.stdout.strip())
+                        pl = line.split("\t") if "\t" in line else line.split(maxsplit=1)
+                        size_str = pl[0].strip() if len(pl) >= 2 else "?"
+                        size_mb = parse_size_to_mb(size_str)
+                    except Exception:
+                        size_str = "?"
+                        size_mb = 0.0
+                else:
+                    st = entry.stat(follow_symlinks=False)
+                    sb = st.st_size
+                    if sb >= 1024**3:
+                        size_str = f"{round(sb / (1024**3), 1)}G"
+                    elif sb >= 1024**2:
+                        size_str = f"{round(sb / (1024**2), 1)}M"
+                    elif sb >= 1024:
+                        size_str = f"{round(sb / 1024, 1)}K"
+                    else:
+                        size_str = f"{sb}B"
+                    size_mb = sb / (1024**2)
+
+                items.append({
+                    "size": size_str,
+                    "path": entry.path,
+                    "name": entry.name,
+                    "is_dir": is_d,
+                    "size_mb": size_mb
+                })
+            except Exception:
+                pass
+
+    if norm_excluded:
+        items = [
+            it for it in items
+            if not any(
+                os.path.abspath(it["path"]) == ex or os.path.abspath(it["path"]).startswith(ex + os.sep)
+                for ex in norm_excluded
+            )
+        ]
+
     items.sort(key=lambda x: x.get("size_mb", 0.0), reverse=True)
     return {
         "path": target_path,
+        "parent_path": parent_path,
+        "breadcrumbs": breadcrumbs,
         "total_items": len(items),
         "items": items
     }

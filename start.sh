@@ -31,7 +31,7 @@ cleanup() {
     fi
     fuser -k 3000/tcp >/dev/null 2>&1 || true
     if [ "$IS_ACTIVE" != "active" ]; then
-        fuser -k 8000/tcp >/dev/null 2>&1 || true
+        fuser -k 15000/tcp >/dev/null 2>&1 || true
     fi
     echo "✓ Stopped cleanly."
     exit 0
@@ -60,15 +60,15 @@ else
         exit 1
     fi
 
-    echo "⚡ Starting temporary standalone backend on http://localhost:8000..."
-    fuser -k 8000/tcp >/dev/null 2>&1 || true
+    echo "⚡ Starting temporary standalone backend on http://localhost:15000..."
+    fuser -k 15000/tcp >/dev/null 2>&1 || true
     cd "$BACKEND_DIR"
-    uv run uvicorn main:app --host 0.0.0.0 --port 8000 --no-access-log --workers 1 &
+    uv run uvicorn main:app --host 0.0.0.0 --port 15000 --no-access-log --workers 1 &
     BACKEND_PID=$!
 
-    # Wait for backend port 8000 to become active
+    # Wait for backend port 15000 to become active
     for i in {1..10}; do
-        if nc -z localhost 8000 2>/dev/null || curl -s http://localhost:8000/api/vitals >/dev/null 2>&1; then
+        if nc -z localhost 15000 2>/dev/null || curl -s http://localhost:15000/api/vitals >/dev/null 2>&1; then
             echo "✓ Standalone backend API is ready!"
             break
         fi
@@ -90,7 +90,7 @@ echo ""
 echo "=========================================================="
 echo " 🎉 PulseLinux Dashboard is running!"
 echo " ➜ Dashboard: http://localhost:3000"
-echo " ➜ Backend:   http://localhost:8000"
+echo " ➜ Backend:   http://localhost:15000"
 echo " ➜ Press Ctrl+C to stop frontend."
 echo "=========================================================="
 

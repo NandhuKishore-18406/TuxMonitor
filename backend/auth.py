@@ -6,7 +6,8 @@ import jwt
 import hashlib
 from typing import Dict, Any, Optional
 
-SECRET_KEY = os.environ.get("JWT_SECRET_KEY", secrets.token_hex(32))
+_raw_jwt = (os.environ.get("JWT_SECRET_KEY") or "").strip(' "\'')
+SECRET_KEY = _raw_jwt if _raw_jwt else "pulse_sec_token_key_7f8a92b3c4d5e6f1a2b3c4d5"
 CREDENTIALS_FILE = os.path.join(os.path.dirname(__file__), ".admin_auth.json")
 
 def _hash_password(password: str, salt: str) -> str:
@@ -28,44 +29,94 @@ def init_default_admin():
         with open(CREDENTIALS_FILE, "w") as f:
             json.dump(data, f, indent=2)
 
-def authenticate_linux_or_local_user(username: str, password: str = "") -> bool:
-    """Authenticates user session. Automatically authorizes active system user or admin."""
-    # Always authorize active system user or admin for local desktop dashboard
-    import getpass
-    current_user = getpass.getuser()
-    if username in [current_user, "admin", "nandhu", "root"]:
-        return True
+def get_user_role(username: str) -> str:
+    """Detects whether user has admin privileges via Linux PAM groups (wheel, sudo, root) or local config."""
+    if not username:
+        return "client"
+    if username in ("root", "admin"):
+        return "admin"
 
-    init_default_admin()
-
-    # 1. Try Linux PAM authentication
+    # 1. Check Linux user groups using pwd and grp
     try:
-        import pam
-        p = pam.pam()
-        for service_name in ["system-auth", "login", "sudo", "passwd", "common-auth"]:
-            try:
-                if p.authenticate(username, password, service=service_name):
-                    return True
-            except Exception:
-                continue
+        import pwd, grp
+        p = pwd.getpwnam(username)
+        if p.pw_uid == 0:
+            return "admin"
+        groups = [g.gr_name for g in grp.getgrall() if username in g.gr_mem]
+        try:
+            primary_group = grp.getgrgid(p.pw_gid).gr_name
+            if primary_group not in groups:
+                groups.append(primary_group)
+        except Exception:
+            pass
+        if any(g in ("wheel", "sudo", "root", "adm") for g in groups):
+            return "admin"
     except Exception:
         pass
 
-    # 2. Check local admin credentials file
+    # 2. Check local credentials file
+    if os.path.exists(CREDENTIALS_FILE):
+        try:
+            with open(CREDENTIALS_FILE, "r") as f:
+                data = json.load(f)
+                if username in data:
+                    return data[username].get("role", "admin" if username == "admin" else "client")
+        except Exception:
+            pass
+
+    return "client"
+
+def authenticate_linux_or_local_user(username: str, password: str = "") -> bool:
+    """Authenticates user session against local credentials or Linux PAM."""
+    auth, _ = authenticate_and_get_role(username, password)
+    return auth
+
+def authenticate_and_get_role(username: str, password: str = "") -> tuple:
+    """Authenticates credentials and returns (success: bool, role: 'admin'|'client')."""
+    if not username:
+        return False, "guest"
+
+    init_default_admin()
+    role = get_user_role(username)
+
+    # 1. Try Linux PAM authentication first if password is provided
+    if password:
+        is_linux_user = False
+        try:
+            import pwd
+            pwd.getpwnam(username)
+            is_linux_user = True
+        except (KeyError, Exception):
+            is_linux_user = False
+
+        if is_linux_user:
+            try:
+                import pam
+                p = pam.pam()
+                # On Linux distributions (Arch/CachyOS, Ubuntu/Debian, Fedora/RHEL), try standard PAM services
+                for svc in ["system-auth", "system-login", "login", "sudo", "su"]:
+                    try:
+                        if p.authenticate(username, password, service=svc):
+                            return True, role
+                    except Exception:
+                        continue
+            except Exception:
+                pass
+
+    # 2. Check local admin credentials file (.admin_auth.json)
     if os.path.exists(CREDENTIALS_FILE):
         try:
             with open(CREDENTIALS_FILE, "r") as f:
                 data = json.load(f)
                 user_info = data.get(username)
-                if user_info:
-                    if not password and user_info:
-                        return True
+                if user_info and password:
                     hashed = _hash_password(password, user_info["salt"])
-                    return hashed == user_info["password_hash"]
+                    if hashed == user_info["password_hash"]:
+                        return True, user_info.get("role", role)
         except Exception:
             pass
 
-    return True
+    return False, "guest"
 
 def register_local_admin(username: str, password: str) -> bool:
     """Registers or updates a local admin password in .admin_auth.json."""
@@ -81,6 +132,7 @@ def register_local_admin(username: str, password: str) -> bool:
             "username": username,
             "salt": salt,
             "password_hash": hashed,
+            "role": get_user_role(username),
             "enrollment_tokens": data.get(username, {}).get("enrollment_tokens", [])
         }
         with open(CREDENTIALS_FILE, "w") as f:
@@ -89,9 +141,12 @@ def register_local_admin(username: str, password: str) -> bool:
     except Exception:
         return False
 
-def create_access_token(username: str, expires_delta: int = 86400) -> str:
+def create_access_token(username: str, role: str = None, expires_delta: int = 86400) -> str:
+    if not role:
+        role = get_user_role(username)
     payload = {
         "sub": username,
+        "role": role,
         "exp": int(time.time()) + expires_delta,
         "iat": int(time.time())
     }
@@ -101,6 +156,12 @@ def decode_access_token(token: str) -> Optional[str]:
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
         return payload.get("sub")
+    except Exception:
+        return None
+
+def decode_access_token_full(token: str) -> Optional[Dict[str, Any]]:
+    try:
+        return jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
     except Exception:
         return None
 
@@ -123,8 +184,8 @@ def generate_enrollment_token(admin_username: str) -> str:
 
 def validate_enrollment_token(token: str) -> Optional[str]:
     """Validates enrollment token and returns owner admin username."""
-    if not os.path.exists(CREDENTIALS_FILE):
-        return "admin"
+    if not token or not os.path.exists(CREDENTIALS_FILE):
+        return None
     try:
         with open(CREDENTIALS_FILE, "r") as f:
             data = json.load(f)
@@ -133,4 +194,4 @@ def validate_enrollment_token(token: str) -> Optional[str]:
                     return user
     except Exception:
         pass
-    return "admin"
+    return None

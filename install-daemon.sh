@@ -40,12 +40,12 @@ done
 
 # Interactive Prompts if attributes are empty and running in interactive terminal
 if [ -t 0 ] && [ -z "$INPUT_HUB_URL" ]; then
-    read -p "🌐 Master Hub WebSocket URL [default ws://127.0.0.1:8000]: " USER_HUB
-    INPUT_HUB_URL="${USER_HUB:-ws://127.0.0.1:8000}"
+    read -p "🌐 Master Hub WebSocket URL [default ws://127.0.0.1:15000]: " USER_HUB
+    INPUT_HUB_URL="${USER_HUB:-ws://127.0.0.1:15000}"
 fi
 
 if [ -z "$INPUT_HUB_URL" ]; then
-    INPUT_HUB_URL="ws://127.0.0.1:8000"
+    INPUT_HUB_URL="ws://127.0.0.1:15000"
 fi
 
 if [ -t 0 ] && [ -z "$INPUT_TOKEN" ]; then
@@ -116,6 +116,12 @@ else
     exit 1
 fi
 
+# Configure UFW Firewall Rule for Fleet Master Hub Port (15000)
+if command -v ufw >/dev/null 2>&1; then
+    echo "🛡️  Allowing port 15000/tcp in UFW firewall..."
+    ufw allow 15000/tcp comment "PulseLinux System Vitals Hub" 2>/dev/null || true
+fi
+
 # 4. Dynamically generate Systemd Service Unit for target machine path
 echo "🚀 Installing Systemd service /etc/systemd/system/$SERVICE_NAME..."
 cat <<EOF > "/etc/systemd/system/$SERVICE_NAME"
@@ -130,7 +136,7 @@ User=$DAEMON_USER
 Group=$DAEMON_USER
 WorkingDirectory=$PROJECT_DIR/backend
 EnvironmentFile=-/etc/default/pulse-vitals-daemon
-ExecStart=$PROJECT_DIR/backend/.venv/bin/uvicorn main:app --host 0.0.0.0 --port 8000 --no-access-log --workers 1
+ExecStart=$PROJECT_DIR/backend/.venv/bin/uvicorn main:app --host 0.0.0.0 --port 15000 --no-access-log --workers 1
 Restart=always
 RestartSec=3
 

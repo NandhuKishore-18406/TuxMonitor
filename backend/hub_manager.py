@@ -16,6 +16,8 @@ class ConnectedDevice:
         self.latest_vitals: Dict[str, Any] = {}
 
     def is_online(self, timeout: float = 10.0) -> bool:
+        if self.device_id == "local-node":
+            return True
         return (time.time() - self.last_seen) < timeout
 
     def to_dict(self) -> Dict[str, Any]:
@@ -29,6 +31,7 @@ class ConnectedDevice:
             "owner_admin": self.owner_admin,
             "status": "online" if online else "offline",
             "last_seen": int(self.last_seen),
+            "latest_vitals": self.latest_vitals if online else {},
             "vitals_summary": {
                 "cpu": self.latest_vitals.get("cpu", {}).get("percent", 0),
                 "ram": self.latest_vitals.get("memory", {}).get("percent", 0),
@@ -82,7 +85,9 @@ class FleetHubManager:
     def get_fleet_summary(self, admin_user: Optional[str] = None) -> Dict[str, Any]:
         target_devices = list(self.devices.values())
         if admin_user:
-            target_devices = [d for d in target_devices if d.owner_admin == admin_user or d.device_id == "local-node"]
+            is_master = admin_user.lower() in ["admin", "root", "master", "pulse-admin"]
+            if not is_master:
+                target_devices = [d for d in target_devices if d.owner_admin == admin_user or d.device_id == "local-node"]
 
         total_devices = len(target_devices)
         online_devices = [d.to_dict() for d in target_devices if d.is_online()]
@@ -118,5 +123,93 @@ class FleetHubManager:
         except Exception:
             return False
 
+    async def clear_all_connections(self):
+        """Force closes all remote device WebSockets and resets status in Neon DB."""
+        to_close = []
+        for dev_id, dev in list(self.devices.items()):
+            if dev_id != "local-node":
+                if dev.websocket:
+                    to_close.append(dev.websocket)
+                del self.devices[dev_id]
+        
+        for ws in to_close:
+            try:
+                await ws.close(code=1001, reason="Connections cleared by administrator")
+            except Exception:
+                pass
+        
+        try:
+            from database import db_clear_all_connections
+            await db_clear_all_connections()
+        except Exception:
+            pass
+            
+        await self.broadcast_fleet_summary()
+
+    # --- CLIENT APPROVAL REQUESTS (PING TO CONNECT) ---
+    def create_pairing_request(self, hostname: str, ip: str, distro_name: str, distro_id: str, client_ip: str) -> Dict[str, Any]:
+        import secrets
+        req_id = f"req_{secrets.token_hex(6)}"
+        req_item = {
+            "req_id": req_id,
+            "hostname": hostname or "New Linux Client",
+            "ip": ip or client_ip,
+            "distro_name": distro_name or "Linux",
+            "distro_id": distro_id or "linux",
+            "created_at": int(time.time()),
+            "status": "pending"  # pending | approved | rejected
+        }
+        if not hasattr(self, "pairing_requests"):
+            self.pairing_requests = {}
+        self.pairing_requests[req_id] = req_item
+        return req_item
+
+    def get_pending_pairing_requests(self) -> List[Dict[str, Any]]:
+        if not hasattr(self, "pairing_requests"):
+            self.pairing_requests = {}
+        return [r for r in self.pairing_requests.values() if r.get("status") == "pending"]
+
+    def approve_pairing_request(self, req_id: str) -> Optional[str]:
+        if not hasattr(self, "pairing_requests") or req_id not in self.pairing_requests:
+            return None
+        import secrets
+        token = f"pulse_dev_{secrets.token_hex(12)}"
+        self.pairing_requests[req_id]["status"] = "approved"
+        self.pairing_requests[req_id]["token"] = token
+        return token
+
+    def reject_pairing_request(self, req_id: str) -> bool:
+        if not hasattr(self, "pairing_requests") or req_id not in self.pairing_requests:
+            return False
+        self.pairing_requests[req_id]["status"] = "rejected"
+        return True
+
+    # --- CHAT & NOTIFICATION STORE ---
+    def add_chat_message(self, device_id: str, sender: str, text: str, is_admin: bool = False, is_alert: bool = False) -> Dict[str, Any]:
+        if not hasattr(self, "chat_messages"):
+            self.chat_messages = {}
+        if device_id not in self.chat_messages:
+            self.chat_messages[device_id] = []
+        msg = {
+            "id": f"msg_{int(time.time() * 1000)}_{len(self.chat_messages[device_id])}",
+            "device_id": device_id,
+            "sender": sender,
+            "text": text,
+            "is_admin": is_admin,
+            "is_alert": is_alert,
+            "timestamp": int(time.time())
+        }
+        self.chat_messages[device_id].append(msg)
+        # Limit history to 200 items per device
+        if len(self.chat_messages[device_id]) > 200:
+            self.chat_messages[device_id] = self.chat_messages[device_id][-200:]
+        return msg
+
+    def get_chat_messages(self, device_id: str) -> List[Dict[str, Any]]:
+        if not hasattr(self, "chat_messages"):
+            self.chat_messages = {}
+        return self.chat_messages.get(device_id, [])
+
 # Global Fleet Hub Instance
 fleet_hub = FleetHubManager()
+

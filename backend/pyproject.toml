@@ -8,12 +8,17 @@ authors = [
 ]
 requires-python = ">=3.12"
 dependencies = [
+    "asyncpg>=0.30.0",
     "fastapi>=0.141.1",
     "httptools>=0.8.0",
     "passlib>=1.7.4",
     "psutil>=7.2.2",
     "pyjwt>=2.15.1",
+    "python-dotenv>=1.0.0",
     "python-pam>=2.1.0",
+    "greenlet>=3.0.0",
+    "resend>=2.0.0",
+    "sqlalchemy[asyncio]>=2.0.0",
     "uvicorn>=0.54.0",
     "uvloop>=0.23.0",
     "websockets>=17.1",
