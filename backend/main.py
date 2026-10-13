@@ -701,12 +701,12 @@ async def startup_event():
         psutil.cpu_percent(interval=None)
         while True:
             try:
-                snapshot = get_vitals_snapshot()
+                snapshot = await asyncio.to_thread(get_vitals_snapshot)
                 fleet_hub.update_telemetry("local-node", snapshot)
                 await fleet_hub.broadcast_fleet_summary()
             except Exception as e:
                 pass
-            await asyncio.sleep(1.0)
+            await asyncio.sleep(2.0)
 
     asyncio.create_task(update_local_node_telemetry())
 
@@ -1184,11 +1184,11 @@ def get_auto_pairing_script(token_or_pin: str, request: Request = None):
     return f"""#!/bin/bash
 set -e
 echo "=========================================================="
-echo "  PulseLinux Fleet Client Auto-Connector                 "
+echo "  🚀 PulseLinux Fleet Client Auto-Connector               "
 echo "=========================================================="
 
 if [ "$EUID" -ne 0 ]; then
-    echo " Please run with sudo: curl -sSL http://{lan_ip}:15000/pair/{token_or_pin} | sudo bash"
+    echo "❌ Please run with sudo: curl -sSL http://{lan_ip}:15000/pair/{token_or_pin} | sudo bash"
     exit 1
 fi
 
@@ -1199,31 +1199,69 @@ ADMIN_USER="{owner}"
 echo " Connecting to Hub: $HUB_WS"
 echo " Enrolled under Admin: $ADMIN_USER"
 
+# 1. Dedicated permanent installation directory
+INSTALL_DIR="/opt/pulselinux-agent"
+mkdir -p "$INSTALL_DIR"
+
+# 2. Write persistent configuration
 mkdir -p /etc/default
 cat << 'EOF_CONF' > /etc/default/pulse-vitals-daemon
 HUB_URL="{hub_ws}"
 ENROLL_TOKEN="{real_token}"
 ADMIN_USER="{owner}"
 EOF_CONF
+chmod 0644 /etc/default/pulse-vitals-daemon
 
-if [ -f "./install-daemon.sh" ]; then
-    HUB_URL="$HUB_WS" ENROLL_TOKEN="$ENROLL_TOKEN" ADMIN_USER="$ADMIN_USER" ./install-daemon.sh
-else
-    echo " Fetching client installer from master hub..."
-    TMP_DIR=$(mktemp -d)
-    curl -sSL "http://{lan_ip}:15000/install-daemon.sh" -o "$TMP_DIR/install-daemon.sh" 2>/dev/null || true
-    if [ -f "$TMP_DIR/install-daemon.sh" ] && [ -s "$TMP_DIR/install-daemon.sh" ]; then
-        chmod +x "$TMP_DIR/install-daemon.sh"
-        (cd "$TMP_DIR" && HUB_URL="$HUB_WS" ENROLL_TOKEN="$ENROLL_TOKEN" ADMIN_USER="$ADMIN_USER" ./install-daemon.sh)
+# 3. Setup Python virtual environment
+if [ ! -f "$INSTALL_DIR/.venv/bin/python" ]; then
+    echo "📦 Setting up isolated Python agent environment..."
+    if command -v python3 >/dev/null 2>&1; then
+        python3 -m venv "$INSTALL_DIR/.venv"
     else
-        echo " Daemon configuration written to /etc/default/pulse-vitals-daemon"
-        echo " Web Portal available at http://{lan_ip}:15000"
+        echo "❌ python3 is required. Please install python3 first."
+        exit 1
     fi
-    rm -rf "$TMP_DIR"
 fi
 
+# 4. Install required agent dependencies
+echo "📦 Ensuring agent dependencies (psutil, websockets)..."
+"$INSTALL_DIR/.venv/bin/pip" install -q psutil websockets 2>/dev/null || "$INSTALL_DIR/.venv/bin/pip" install psutil websockets
+
+# 5. Fetch latest agent_client.py directly from master hub
+echo "⬇️  Downloading agent streamer from master hub..."
+curl -sSL "http://{lan_ip}:15000/agent_client.py" -o "$INSTALL_DIR/agent_client.py"
+chmod +x "$INSTALL_DIR/agent_client.py"
+
+# 6. Install and enable persistent Systemd service
+echo "⚙️  Installing systemd service /etc/systemd/system/pulse-vitals-agent.service..."
+cat << 'EOF_SVC' > /etc/systemd/system/pulse-vitals-agent.service
+[Unit]
+Description=PulseLinux Fleet Agent Telemetry Streamer
+Documentation=https://github.com/nandhu/tuxMonitor
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/pulselinux-agent
+EnvironmentFile=-/etc/default/pulse-vitals-daemon
+ExecStart=/opt/pulselinux-agent/.venv/bin/python /opt/pulselinux-agent/agent_client.py
+Restart=always
+RestartSec=3
+Nice=10
+
+[Install]
+WantedBy=multi-user.target
+EOF_SVC
+
+systemctl daemon-reload
+systemctl enable pulse-vitals-agent.service
+systemctl restart pulse-vitals-agent.service
+
+echo ""
 echo "=========================================================="
-echo "  Device successfully paired with PulseLinux Fleet Hub!   "
+echo "  ✓ Device successfully paired and streaming to Hub!      "
+echo "  ➜ Service: systemctl status pulse-vitals-agent.service  "
 echo "=========================================================="
 """
 
@@ -1243,6 +1281,10 @@ def serve_quick_connect_script(request: Request = None):
     ws_proto = "wss" if is_secure else "ws"
     http_proto = "https" if is_secure else "http"
 
+    token = ""
+    if request:
+        token = request.query_params.get("token") or request.query_params.get("pin") or ""
+
     if host_header and not host_header.startswith("localhost") and not host_header.startswith("127.0.0.1"):
         target_host = host_header
     else:
@@ -1258,6 +1300,7 @@ echo "  🚀 PulseLinux Fleet Node - Instant Connector           "
 echo "=========================================================="
 
 HUB_WS="{hub_ws}"
+ENROLL_TOKEN="{token}"
 echo "➜ Connecting to Master Hub: $HUB_WS"
 
 # 1. Create client temporary workspace
@@ -1280,7 +1323,7 @@ curl -sSL "{base_http}/agent_client.py" -o agent_client.py || true
 
 # 5. Launch agent streamer connected to Master Hub
 echo "⚡ Starting real-time vitals telemetry streamer..."
-HUB_URL="$HUB_WS" exec ./venv/bin/python agent_client.py
+HUB_URL="$HUB_WS" ENROLL_TOKEN="$ENROLL_TOKEN" exec ./venv/bin/python agent_client.py
 """
 
 @app.get("/agent_client.py", response_class=PlainTextResponse)
@@ -1306,17 +1349,26 @@ async def websocket_agent_stream(websocket: WebSocket, device_id: str, token: st
             # 2. Local credentials file enrollment token
             if not owner_admin:
                 owner_admin = validate_enrollment_token(token)
-            # 3. Database persistent device token
-            if not owner_admin:
-                owner_admin = await db_verify_device_token(token)
-            # 4. Check if token is an unconsumed OTP code
-            if not owner_admin:
-                otp_res = await db_verify_and_consume_otp(token)
-                if otp_res:
-                    owner_admin = otp_res[0]
-            # 5. Check if token is an approved ping pairing request token
+            # 3. Active in-memory pairing PIN or token
+            if not owner_admin and token in _active_pairing_pins:
+                owner_admin = _active_pairing_pins[token].get("owner", "admin")
+            # 4. Approved pairing request token
             if not owner_admin and fleet_hub.is_valid_paired_token(token):
                 owner_admin = "admin"
+            # 5. Database persistent device token (with 2s timeout)
+            if not owner_admin:
+                try:
+                    owner_admin = await asyncio.wait_for(db_verify_device_token(token), timeout=2.0)
+                except Exception:
+                    pass
+            # 6. Check if token is an unconsumed OTP code (with 2s timeout)
+            if not owner_admin:
+                try:
+                    otp_res = await asyncio.wait_for(db_verify_and_consume_otp(token), timeout=2.0)
+                    if otp_res:
+                        owner_admin = otp_res[0]
+                except Exception:
+                    pass
 
     # If no token provided or connecting from local/private network, default to admin ownership
     if not owner_admin:
@@ -1332,7 +1384,10 @@ async def websocket_agent_stream(websocket: WebSocket, device_id: str, token: st
         distro_id = init_data.get("distro_id", "linux")
 
         fleet_hub.register_or_update_device(device_id, hostname, ip, distro_name, distro_id, websocket, owner_admin=owner_admin)
-        await db_register_device(device_id, hostname, ip, distro_name, distro_id, owner_admin)
+        try:
+            await asyncio.wait_for(db_register_device(device_id, hostname, ip, distro_name, distro_id, owner_admin), timeout=2.0)
+        except Exception:
+            pass
         await fleet_hub.broadcast_fleet_summary()
 
         while True:
@@ -1342,7 +1397,10 @@ async def websocket_agent_stream(websocket: WebSocket, device_id: str, token: st
     except (WebSocketDisconnect, Exception):
         # Mark offline in memory and DB (do NOT delete, so admin sees offline status)
         fleet_hub.mark_device_offline(device_id)
-        await db_mark_device_offline(device_id)
+        try:
+            await asyncio.wait_for(db_mark_device_offline(device_id), timeout=2.0)
+        except Exception:
+            pass
         await fleet_hub.broadcast_fleet_summary()
 
 @app.websocket("/ws/fleet/admin")
@@ -1412,7 +1470,7 @@ async def websocket_vitals_feed(websocket: WebSocket):
     psutil.cpu_percent(interval=None)
     try:
         while True:
-            vitals = get_vitals_snapshot()
+            vitals = await asyncio.to_thread(get_vitals_snapshot)
             fleet_hub.update_telemetry("local-node", vitals)
             await websocket.send_json(vitals)
             await asyncio.sleep(1.0)

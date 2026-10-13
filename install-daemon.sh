@@ -118,10 +118,11 @@ else
     exit 1
 fi
 
-# Configure UFW Firewall Rule for Fleet Master Hub Port (15000)
+# Configure UFW Firewall Rules for Fleet Master Hub Port (15000) and Web Dashboard (3000)
 if command -v ufw >/dev/null 2>&1; then
-    echo "🛡️  Allowing port 15000/tcp in UFW firewall..."
+    echo "🛡️  Allowing ports 15000/tcp and 3000/tcp in UFW firewall..."
     ufw allow 15000/tcp comment "PulseLinux System Vitals Hub" 2>/dev/null || true
+    ufw allow 3000/tcp comment "PulseLinux Dashboard" 2>/dev/null || true
 fi
 
 # If HUB_URL points to a remote server (not localhost/127.0.0.1), run agent_client.py
@@ -152,11 +153,11 @@ Restart=always
 RestartSec=3
 
 # Resource Limits
-MemoryMax=120M
-MemoryHigh=100M
-CPUQuota=15%
-Nice=10
-TasksMax=50
+MemoryMax=512M
+MemoryHigh=384M
+CPUQuota=60%
+Nice=5
+TasksMax=200
 
 [Install]
 WantedBy=multi-user.target

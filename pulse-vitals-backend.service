@@ -13,12 +13,12 @@ ExecStart=/home/nandhu/projects/system-vitals-monitor/backend/.venv/bin/uvicorn 
 Restart=always
 RestartSec=3
 
-# Resource Limits to ensure daemon remains lightweight & low memory footprint
-MemoryMax=120M
-MemoryHigh=100M
-CPUQuota=15%
-Nice=10
-TasksMax=50
+# Resource Limits to ensure daemon remains responsive and stable
+MemoryMax=512M
+MemoryHigh=384M
+CPUQuota=60%
+Nice=5
+TasksMax=200
 
 [Install]
 WantedBy=multi-user.target

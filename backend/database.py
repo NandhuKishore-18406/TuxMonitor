@@ -2,6 +2,7 @@ import os
 import time
 import secrets
 import logging
+import asyncio
 from typing import Dict, Any, List, Optional
 try:
     from dotenv import load_dotenv
@@ -10,6 +11,8 @@ except ImportError:
     pass
 
 logger = logging.getLogger("database")
+
+DB_TIMEOUT_SEC = 3.0  # Safeguard timeout so remote DB latency never hangs local/fleet event loop
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "").strip(' "\'')
 
@@ -84,6 +87,7 @@ if DATABASE_URL:
             DATABASE_URL,
             echo=False,
             pool_pre_ping=True,
+            pool_recycle=300,
             connect_args=connect_args
         )
         AsyncSessionLocal = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
@@ -94,8 +98,10 @@ if DATABASE_URL:
 async def init_db():
     if engine:
         try:
-            async with engine.begin() as conn:
-                await conn.run_sync(Base.metadata.create_all)
+            async def _init():
+                async with engine.begin() as conn:
+                    await conn.run_sync(Base.metadata.create_all)
+            await asyncio.wait_for(_init(), timeout=DB_TIMEOUT_SEC)
             logger.info("Neon DB database tables verified/created successfully.")
         except Exception as e:
             logger.error(f"Error creating Neon DB tables: {e}")
@@ -103,56 +109,60 @@ async def init_db():
 async def db_register_device(device_id: str, hostname: str, ip: str, distro_name: str, distro_id: str, owner_admin: str):
     if not AsyncSessionLocal: return
     try:
-        async with AsyncSessionLocal() as session:
-            async with session.begin():
-                dev = await session.get(DeviceDB, device_id)
-                if not dev:
-                    dev = DeviceDB(
+        async def _register():
+            async with AsyncSessionLocal() as session:
+                async with session.begin():
+                    dev = await session.get(DeviceDB, device_id)
+                    if not dev:
+                        dev = DeviceDB(
+                            device_id=device_id,
+                            hostname=hostname,
+                            ip=ip,
+                            distro_name=distro_name,
+                            distro_id=distro_id,
+                            owner_admin=owner_admin,
+                            status="online",
+                            last_seen=int(time.time())
+                        )
+                        session.add(dev)
+                    else:
+                        dev.hostname = hostname
+                        dev.ip = ip
+                        dev.distro_name = distro_name
+                        dev.distro_id = distro_id
+                        dev.owner_admin = owner_admin
+                        dev.status = "online"
+                        dev.last_seen = int(time.time())
+                    
+                    # Log connection
+                    log = ConnectionLogDB(
+                        id=f"log-{secrets.token_hex(8)}",
                         device_id=device_id,
-                        hostname=hostname,
-                        ip=ip,
-                        distro_name=distro_name,
-                        distro_id=distro_id,
-                        owner_admin=owner_admin,
-                        status="online",
-                        last_seen=int(time.time())
+                        event="CONNECTED",
+                        timestamp=int(time.time())
                     )
-                    session.add(dev)
-                else:
-                    dev.hostname = hostname
-                    dev.ip = ip
-                    dev.distro_name = distro_name
-                    dev.distro_id = distro_id
-                    dev.owner_admin = owner_admin
-                    dev.status = "online"
-                    dev.last_seen = int(time.time())
-                
-                # Log connection
-                log = ConnectionLogDB(
-                    id=f"log-{secrets.token_hex(8)}",
-                    device_id=device_id,
-                    event="CONNECTED",
-                    timestamp=int(time.time())
-                )
-                session.add(log)
+                    session.add(log)
+        await asyncio.wait_for(_register(), timeout=DB_TIMEOUT_SEC)
     except Exception as e:
         logger.error(f"DB register device error: {e}")
 
 async def db_mark_device_offline(device_id: str):
     if not AsyncSessionLocal: return
     try:
-        async with AsyncSessionLocal() as session:
-            async with session.begin():
-                dev = await session.get(DeviceDB, device_id)
-                if dev:
-                    dev.status = "offline"
-                    log = ConnectionLogDB(
-                        id=f"log-{secrets.token_hex(8)}",
-                        device_id=device_id,
-                        event="DISCONNECTED",
-                        timestamp=int(time.time())
-                    )
-                    session.add(log)
+        async def _mark_off():
+            async with AsyncSessionLocal() as session:
+                async with session.begin():
+                    dev = await session.get(DeviceDB, device_id)
+                    if dev:
+                        dev.status = "offline"
+                        log = ConnectionLogDB(
+                            id=f"log-{secrets.token_hex(8)}",
+                            device_id=device_id,
+                            event="DISCONNECTED",
+                            timestamp=int(time.time())
+                        )
+                        session.add(log)
+        await asyncio.wait_for(_mark_off(), timeout=DB_TIMEOUT_SEC)
     except Exception as e:
         logger.error(f"DB mark offline error: {e}")
 
@@ -206,19 +216,22 @@ async def db_verify_and_consume_otp(otp_code: str) -> Optional[tuple[str, str]]:
     if not AsyncSessionLocal:
         return None
     try:
-        async with AsyncSessionLocal() as session:
-            async with session.begin():
-                from sqlalchemy import select
-                stmt = select(EnrollmentCodeDB).where(
-                    EnrollmentCodeDB.otp_code == otp_code,
-                    EnrollmentCodeDB.is_used == False,
-                    EnrollmentCodeDB.expires_at > int(time.time())
-                )
-                res = await session.execute(stmt)
-                record = res.scalars().first()
-                if record:
-                    record.is_used = True
-                    return record.owner_admin, record.token
+        async def _verify_otp():
+            async with AsyncSessionLocal() as session:
+                async with session.begin():
+                    from sqlalchemy import select
+                    stmt = select(EnrollmentCodeDB).where(
+                        EnrollmentCodeDB.otp_code == otp_code,
+                        EnrollmentCodeDB.is_used == False,
+                        EnrollmentCodeDB.expires_at > int(time.time())
+                    )
+                    res = await session.execute(stmt)
+                    record = res.scalars().first()
+                    if record:
+                        record.is_used = True
+                        return record.owner_admin, record.token
+                    return None
+        return await asyncio.wait_for(_verify_otp(), timeout=DB_TIMEOUT_SEC)
     except Exception as e:
         logger.error(f"DB verify OTP error: {e}")
     return None
@@ -228,17 +241,20 @@ async def db_verify_device_token(token: str) -> Optional[str]:
     if not AsyncSessionLocal:
         return None
     try:
-        async with AsyncSessionLocal() as session:
-            async with session.begin():
-                from sqlalchemy import select
-                stmt = select(EnrollmentCodeDB).where(
-                    EnrollmentCodeDB.token == token,
-                    EnrollmentCodeDB.expires_at > int(time.time())
-                )
-                res = await session.execute(stmt)
-                record = res.scalars().first()
-                if record:
-                    return record.owner_admin
+        async def _verify_tok():
+            async with AsyncSessionLocal() as session:
+                async with session.begin():
+                    from sqlalchemy import select
+                    stmt = select(EnrollmentCodeDB).where(
+                        EnrollmentCodeDB.token == token,
+                        EnrollmentCodeDB.expires_at > int(time.time())
+                    )
+                    res = await session.execute(stmt)
+                    record = res.scalars().first()
+                    if record:
+                        return record.owner_admin
+                    return None
+        return await asyncio.wait_for(_verify_tok(), timeout=DB_TIMEOUT_SEC)
     except Exception as e:
         logger.error(f"DB verify device token error: {e}")
     return None
@@ -248,21 +264,24 @@ async def db_verify_otp_or_token(otp_or_token: str) -> Optional[str]:
     if not AsyncSessionLocal:
         return None
     try:
-        async with AsyncSessionLocal() as session:
-            async with session.begin():
-                from sqlalchemy import select, or_
-                stmt = select(EnrollmentCodeDB).where(
-                    or_(EnrollmentCodeDB.otp_code == otp_or_token, EnrollmentCodeDB.token == otp_or_token),
-                    EnrollmentCodeDB.expires_at > int(time.time())
-                )
-                res = await session.execute(stmt)
-                record = res.scalars().first()
-                if record:
-                    if record.otp_code == otp_or_token:
-                        if record.is_used:
-                            return None
-                        record.is_used = True
-                    return record.owner_admin
+        async def _verify():
+            async with AsyncSessionLocal() as session:
+                async with session.begin():
+                    from sqlalchemy import select, or_
+                    stmt = select(EnrollmentCodeDB).where(
+                        or_(EnrollmentCodeDB.otp_code == otp_or_token, EnrollmentCodeDB.token == otp_or_token),
+                        EnrollmentCodeDB.expires_at > int(time.time())
+                    )
+                    res = await session.execute(stmt)
+                    record = res.scalars().first()
+                    if record:
+                        if record.otp_code == otp_or_token:
+                            if record.is_used:
+                                return None
+                            record.is_used = True
+                        return record.owner_admin
+                    return None
+        return await asyncio.wait_for(_verify(), timeout=DB_TIMEOUT_SEC)
     except Exception as e:
         logger.error(f"DB verify OTP error: {e}")
     return None

@@ -10,6 +10,7 @@ from typing import Dict, Any
 
 import time
 import subprocess
+import shutil
 import psutil
 
 try:
@@ -284,7 +285,7 @@ class AgentClient:
         while self.running:
             try:
                 logger.info(f"Connecting to Central Fleet Hub at {target_url}...")
-                async with websockets.connect(target_url) as ws:
+                async with websockets.connect(target_url, open_timeout=20, ping_interval=20, ping_timeout=20) as ws:
                     logger.info("Connected to Fleet Hub! Sending handshake registration...")
                     
                     handshake = {
@@ -313,6 +314,28 @@ class AgentClient:
                             msg_str = await ws.recv()
                             try:
                                 cmd = json.loads(msg_str)
+                                msg_type = cmd.get("type")
+                                if msg_type == "notification":
+                                    title = cmd.get("title", "PulseLinux Notification")
+                                    msg = cmd.get("message", "")
+                                    urgency = cmd.get("urgency", "normal")
+                                    if shutil.which("notify-send"):
+                                        try:
+                                            subprocess.run(["notify-send", "-u", urgency, "-a", "PulseLinux", title, msg], check=False)
+                                        except Exception:
+                                            pass
+                                    continue
+                                elif msg_type == "chat_message":
+                                    m = cmd.get("message", {})
+                                    txt = m.get("text", "")
+                                    sender = m.get("sender", "Admin")
+                                    if shutil.which("notify-send"):
+                                        try:
+                                            subprocess.run(["notify-send", "-a", "PulseLinux", f"💬 {sender}", txt], check=False)
+                                        except Exception:
+                                            pass
+                                    continue
+
                                 action = cmd.get("action")
                                 payload = cmd.get("payload", {})
                                 logger.info(f"Received remote command: {action} with payload: {payload}")

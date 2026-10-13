@@ -210,6 +210,7 @@ export default function App() {
   const [loginError, setLoginError] = useState('');
   const [isLoggingIn, setIsLoggingIn] = useState(false);
   const [generatedToken, setGeneratedToken] = useState('');
+  const [tokenData, setTokenData] = useState(null);
   const [showTokenModal, setShowTokenModal] = useState(false);
 
   const [isRegisterMode, setIsRegisterMode] = useState(false);
@@ -255,6 +256,7 @@ export default function App() {
       const data = await res.json();
       if (data.enrollment_token) {
         setGeneratedToken(data.enrollment_token);
+        setTokenData(data);
         setShowTokenModal(true);
       }
     } catch (err) {}
@@ -391,27 +393,34 @@ export default function App() {
     return () => clearInterval(interval);
   }, []);
 
-  // Telemetry stream & Device Switcher
+  // Initial one-time resource fetch on component mount
   useEffect(() => {
-    // If local device is selected, connect directly to local /ws/vitals
-    if (selectedDeviceId === 'local' || selectedDeviceId === 'local-node') {
-      fetchThresholds();
-      runDiagnostics();
-      fetchOpenPorts();
-      fetchCleanableStorage();
-      fetchDf();
-      fetchDu('~');
-      fetchInxi();
-      fetchSmart();
+    fetchThresholds();
+    fetchDf();
+    fetchOpenPorts();
+  }, []);
 
-      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const wsUrl = `${protocol}//${window.location.host}/ws/vitals`;
+  // Dedicated Local Telemetry WebSocket stream (strictly decoupled from fleetSummary polling)
+  useEffect(() => {
+    if (selectedDeviceId !== 'local' && selectedDeviceId !== 'local-node') {
+      return;
+    }
 
-      function connect() {
-        const ws = new WebSocket(wsUrl);
+    let isCancelled = false;
+    let reconnectTimer = null;
+    let ws = null;
+
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsUrl = `${protocol}//${window.location.host}/ws/vitals`;
+
+    function connect() {
+      if (isCancelled) return;
+      try {
+        ws = new WebSocket(wsUrl);
         wsRef.current = ws;
 
         ws.onmessage = (event) => {
+          if (isCancelled) return;
           try {
             const data = JSON.parse(event.data);
             setVitals(data);
@@ -437,34 +446,58 @@ export default function App() {
           }
         };
 
-        ws.onclose = () => setTimeout(connect, 2000);
-        ws.onerror = () => ws.close();
+        ws.onclose = () => {
+          if (!isCancelled) {
+            reconnectTimer = setTimeout(connect, 3000);
+          }
+        };
+        ws.onerror = () => {
+          if (ws) ws.close();
+        };
+      } catch (err) {
+        if (!isCancelled) {
+          reconnectTimer = setTimeout(connect, 3000);
+        }
       }
+    }
 
-      connect();
-      return () => { if (wsRef.current) wsRef.current.close(); };
-    } else {
-      // Remote device selected: look up its latest vitals from fleet summary
-      const dev = (fleetSummary.devices || []).find(d => d.device_id === selectedDeviceId);
-      if (dev && dev.latest_vitals && Object.keys(dev.latest_vitals).length > 0) {
-        const v = dev.latest_vitals;
-        setVitals(v);
-        setHistory(prev => ({
-          cpu: [...prev.cpu.slice(-29), v.cpu?.percent ?? dev.vitals_summary?.cpu ?? 0],
-          ram: [...prev.ram.slice(-29), v.memory?.percent ?? dev.vitals_summary?.ram ?? 0],
-          gpu0: [...prev.gpu0.slice(-29), 0],
-          gpu1: [...prev.gpu1.slice(-29), 0],
-          netDown: [...prev.netDown.slice(-29), v.network?.down_kb_s || v.network?.download_kb_s || 0],
-          netUp: [...prev.netUp.slice(-29), v.network?.up_kb_s || v.network?.upload_kb_s || 0],
-          diskRead: [...prev.diskRead.slice(-29), v.disk?.read_kb_s || 0]
-        }));
-        if (v.filesystems && v.filesystems.length > 0) setDfFilesystems(v.filesystems);
-        if (v.open_ports) setOpenPorts(v.open_ports);
-        else setOpenPorts([]);
-        setCleanableStorage(v.cleanable || null);
-        setSmartData(v.smart || null);
-        setDiagResults(v.diag || null);
+    connect();
+
+    return () => {
+      isCancelled = true;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      if (ws) {
+        ws.onclose = null;
+        ws.close();
       }
+    };
+  }, [selectedDeviceId]);
+
+  // Remote Device Telemetry Sync (only updates when a remote node is selected)
+  useEffect(() => {
+    if (selectedDeviceId === 'local' || selectedDeviceId === 'local-node') {
+      return;
+    }
+
+    const dev = (fleetSummary.devices || []).find(d => d.device_id === selectedDeviceId);
+    if (dev && dev.latest_vitals && Object.keys(dev.latest_vitals).length > 0) {
+      const v = dev.latest_vitals;
+      setVitals(v);
+      setHistory(prev => ({
+        cpu: [...prev.cpu.slice(-29), v.cpu?.percent ?? dev.vitals_summary?.cpu ?? 0],
+        ram: [...prev.ram.slice(-29), v.memory?.percent ?? dev.vitals_summary?.ram ?? 0],
+        gpu0: [...prev.gpu0.slice(-29), 0],
+        gpu1: [...prev.gpu1.slice(-29), 0],
+        netDown: [...prev.netDown.slice(-29), v.network?.down_kb_s || v.network?.download_kb_s || 0],
+        netUp: [...prev.netUp.slice(-29), v.network?.up_kb_s || v.network?.upload_kb_s || 0],
+        diskRead: [...prev.diskRead.slice(-29), v.disk?.read_kb_s || 0]
+      }));
+      if (v.filesystems && v.filesystems.length > 0) setDfFilesystems(v.filesystems);
+      if (v.open_ports) setOpenPorts(v.open_ports);
+      else setOpenPorts([]);
+      setCleanableStorage(v.cleanable || null);
+      setSmartData(v.smart || null);
+      setDiagResults(v.diag || null);
     }
   }, [selectedDeviceId, fleetSummary]);
 
@@ -539,6 +572,8 @@ export default function App() {
     if (appId === 'du') fetchDu(duPath);
     if (appId === 'about') fetchInxi();
     if (appId === 'taskmanager') { fetchOpenPorts(); fetchSmart(); }
+    if (appId === 'diagnostics') runDiagnostics();
+    if (appId === 'alerts') fetchThresholds();
   };
 
   const focusWindow = (appId) => {
@@ -1476,13 +1511,31 @@ export default function App() {
               Run this command on the remote device to pair it with account <strong>{adminUser}</strong>:
             </div>
 
-            <div style={{ background: '#09090b', padding: '10px', borderRadius: '4px', border: '1px solid #27272a', fontFamily: 'monospace', fontSize: '0.75rem', color: '#4ade80', wordBreak: 'break-all', marginBottom: '10px' }}>
-              curl -sSL http://{window.location.hostname}:15000/connect.sh | bash
+            <div style={{ fontSize: '0.75rem', color: '#a1a1aa', marginBottom: '6px', fontWeight: 'bold' }}>
+              ⚡ Option 1: One-Click Auto-Pair Daemon (Run on Remote Machine as sudo):
             </div>
+            <div style={{ background: '#09090b', padding: '10px', borderRadius: '4px', border: '1px solid #27272a', fontFamily: 'monospace', fontSize: '0.75rem', color: '#4ade80', wordBreak: 'break-all', marginBottom: '12px' }}>
+              {tokenData?.pin_pair_cmd || tokenData?.pair_cmd || `curl -sSL http://${tokenData?.hub_ip || window.location.hostname}:15000/pair/${tokenData?.pin || generatedToken} | sudo bash`}
+            </div>
+
+            {tokenData?.pin && (
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: '#27272a', padding: '8px 12px', borderRadius: '4px', marginBottom: '12px' }}>
+                <span style={{ fontSize: '0.75rem', color: '#d4d4d8' }}>6-Digit Pairing PIN:</span>
+                <span style={{ fontSize: '1.1rem', fontWeight: 'bold', letterSpacing: '3px', color: '#38bdf8', fontFamily: 'monospace' }}>{tokenData.pin}</span>
+              </div>
+            )}
+
             <div style={{ fontSize: '0.72rem', color: '#a1a1aa', marginBottom: '12px' }}>
-              Or manual enrollment with token:
-              <div style={{ background: '#09090b', padding: '6px 10px', borderRadius: '4px', border: '1px solid #27272a', fontFamily: 'monospace', color: '#38bdf8', marginTop: '4px' }}>
-                HUB_URL="ws://{window.location.hostname}:15000" ENROLL_TOKEN="{generatedToken}" python3 agent_client.py
+              ⚡ Option 2: Instant run without sudo (User mode):
+              <div style={{ background: '#09090b', padding: '6px 10px', borderRadius: '4px', border: '1px solid #27272a', fontFamily: 'monospace', color: '#38bdf8', marginTop: '4px', wordBreak: 'break-all' }}>
+                curl -sSL "http://{tokenData?.hub_ip || window.location.hostname}:15000/connect.sh?token={generatedToken}" | bash
+              </div>
+            </div>
+
+            <div style={{ fontSize: '0.72rem', color: '#a1a1aa', marginBottom: '12px' }}>
+              Option 3: Manual enrollment:
+              <div style={{ background: '#09090b', padding: '6px 10px', borderRadius: '4px', border: '1px solid #27272a', fontFamily: 'monospace', color: '#f59e0b', marginTop: '4px', wordBreak: 'break-all' }}>
+                HUB_URL="ws://{tokenData?.hub_ip || window.location.hostname}:15000" ENROLL_TOKEN="{generatedToken}" python3 agent_client.py
               </div>
             </div>
 

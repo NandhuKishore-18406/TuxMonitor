@@ -12,8 +12,25 @@ export default defineConfig({
         changeOrigin: true
       },
       '/ws': {
-        target: 'ws://localhost:15000',
-        ws: true
+        target: 'http://localhost:15000',
+        ws: true,
+        changeOrigin: true,
+        configure: (proxy) => {
+          proxy.on('error', (err) => {
+            if (err.code === 'ECONNRESET' || err.code === 'EPIPE') {
+              return; // Suppress client disconnect / reload noise
+            }
+            console.error('[vite] ws proxy error:', err.message);
+          });
+          proxy.on('proxyReqWs', (_proxyReq, _req, socket) => {
+            socket.on('error', (err) => {
+              if (err.code === 'ECONNRESET' || err.code === 'EPIPE') {
+                return;
+              }
+              console.error('[vite] ws proxy socket error:', err.message);
+            });
+          });
+        }
       }
     }
   }

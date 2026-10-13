@@ -360,10 +360,8 @@ def attempt_service_fix(unit_name: str, action: str = "restart") -> tuple:
         out, err, ret = run_privileged_command(["systemctl", "stop", clean_unit])
         return ret == 0, f"Stopped service {clean_unit}: {err or out}"
     else:  # "restart"
-        cmd = ["systemctl", "restart"]
-        if clean_unit.startswith("pulse-vitals-backend"):
-            cmd.append("--no-block")
-        cmd.append(clean_unit)
+        sys_bin = shutil.which("systemctl") or "/usr/bin/systemctl"
+        cmd = [sys_bin, "restart", clean_unit]
         out, err, ret = run_privileged_command(cmd)
         if ret == 0 or "started" in (out + err).lower():
             return True, f"Successfully restarted service {clean_unit}"
@@ -512,7 +510,8 @@ def get_du_info(target_path: str = None, excluded_paths: List[str] = None) -> Di
         can_read = os.access(target_path, os.R_OK | os.X_OK)
 
         def _run_du():
-            cmd = ["du", "-h", "-d", "1", "--one-file-system", target_path]
+            du_bin = shutil.which("du") or "/usr/bin/du"
+            cmd = [du_bin, "-h", "-d", "1", "--one-file-system", target_path]
             # If we can't read the path, escalate via sudo -n (non-interactive)
             if not can_read and shutil.which("sudo"):
                 cmd = ["sudo", "-n"] + cmd
@@ -522,7 +521,7 @@ def get_du_info(target_path: str = None, excluded_paths: List[str] = None) -> Di
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
                     text=True,
-                    timeout=30
+                    timeout=15
                 )
                 du_result["out"] = res.stdout.strip()
                 du_result["ret"] = res.returncode
@@ -534,7 +533,7 @@ def get_du_info(target_path: str = None, excluded_paths: List[str] = None) -> Di
                         stdout=subprocess.PIPE,
                         stderr=subprocess.PIPE,
                         text=True,
-                        timeout=30
+                        timeout=15
                     )
                     if res_sudo.stdout.strip():
                         du_result["out"] = res_sudo.stdout.strip()
@@ -546,7 +545,7 @@ def get_du_info(target_path: str = None, excluded_paths: List[str] = None) -> Di
 
         t = threading.Thread(target=_run_du, daemon=True)
         t.start()
-        t.join(timeout=32)
+        t.join(timeout=16)
 
         raw_out = strip_ansi(du_result["out"])
         # GNU du exits with 1 if any sub-item had permission issues, but still produces valid stdout
@@ -570,30 +569,36 @@ def get_du_info(target_path: str = None, excluded_paths: List[str] = None) -> Di
                     })
 
     # Method 2: scandir fallback if du gave nothing.
-    # Shows immediate children with best-effort sizes (files: stat, dirs: du -s per entry).
+    # Shows immediate children with fast best-effort sizes (files: stat, dirs: quick du -s capped to max 15 entries).
     if not items and os.path.isdir(target_path):
         try:
             entries = list(os.scandir(target_path))
         except PermissionError:
             entries = []
 
+        du_bin = shutil.which("du") or "/usr/bin/du"
+        dir_du_count = 0
         for entry in entries:
             try:
                 is_d = entry.is_dir(follow_symlinks=False)
                 if is_d:
-                    try:
-                        res = subprocess.run(
-                            ["du", "-sh", "--one-file-system", entry.path],
-                            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                            text=True, timeout=5
-                        )
-                        line = strip_ansi(res.stdout.strip())
-                        pl = line.split("\t") if "\t" in line else line.split(maxsplit=1)
-                        size_str = pl[0].strip() if len(pl) >= 2 else "?"
-                        size_mb = parse_size_to_mb(size_str)
-                    except Exception:
-                        size_str = "?"
-                        size_mb = 0.0
+                    size_str = "--"
+                    size_mb = 0.0
+                    if dir_du_count < 15:
+                        dir_du_count += 1
+                        try:
+                            res = subprocess.run(
+                                [du_bin, "-sh", "--one-file-system", entry.path],
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                text=True, timeout=1.0
+                            )
+                            line = strip_ansi(res.stdout.strip())
+                            pl = line.split("\t") if "\t" in line else line.split(maxsplit=1)
+                            size_str = pl[0].strip() if len(pl) >= 2 else "--"
+                            size_mb = parse_size_to_mb(size_str)
+                        except Exception:
+                            size_str = "--"
+                            size_mb = 0.0
                 else:
                     st = entry.stat(follow_symlinks=False)
                     sb = st.st_size
