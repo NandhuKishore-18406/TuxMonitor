@@ -124,6 +124,122 @@ except ImportError:
                     pass
         except Exception: pass
 
+        # GPU Telemetry
+        gpu_vitals = {"available": False, "all_gpus": []}
+        try:
+            gpus = []
+            if shutil.which("nvidia-smi"):
+                try:
+                    res = subprocess.run(
+                        ["nvidia-smi", "--query-gpu=name,utilization.gpu,utilization.memory,memory.total,memory.used,temperature.gpu", "--format=csv,noheader,nounits"],
+                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=1.5
+                    )
+                    if res.returncode == 0 and res.stdout.strip():
+                        for line in res.stdout.strip().splitlines():
+                            parts = [p.strip() for p in line.split(",")]
+                            if len(parts) >= 6:
+                                total_vram_mb = float(parts[3])
+                                used_vram_mb = float(parts[4])
+                                vram_percent = round((used_vram_mb / total_vram_mb) * 100.0, 1) if total_vram_mb > 0 else 0.0
+                                gpus.append({
+                                    "type": "nvidia",
+                                    "name": parts[0],
+                                    "usage_percent": float(parts[1]),
+                                    "vram_percent": vram_percent,
+                                    "vram_used_gb": round(used_vram_mb / 1024.0, 2),
+                                    "vram_total_gb": round(total_vram_mb / 1024.0, 2),
+                                    "vram_used_mb": round(used_vram_mb, 1),
+                                    "vram_total_mb": round(total_vram_mb, 1),
+                                    "temp_c": float(parts[5])
+                                })
+                except Exception:
+                    pass
+
+            drm_path = "/sys/class/drm"
+            if os.path.exists(drm_path):
+                for card in sorted(os.listdir(drm_path)):
+                    if card.startswith("card") and not "-" in card:
+                        card_dev = os.path.join(drm_path, card, "device")
+                        busy_file = os.path.join(card_dev, "gpu_busy_percent")
+                        usage = 0.0
+                        if os.path.exists(busy_file):
+                            try:
+                                with open(busy_file, "r") as f:
+                                    usage = float(f.read().strip())
+                            except Exception:
+                                pass
+
+                        vram_total_bytes = 0
+                        vram_used_bytes = 0
+                        for t_name in ["mem_info_vram_total", "mem_info_gtt_total"]:
+                            t_path = os.path.join(card_dev, t_name)
+                            if os.path.exists(t_path):
+                                try:
+                                    with open(t_path, "r") as f:
+                                        vram_total_bytes = int(f.read().strip())
+                                        if vram_total_bytes > 0:
+                                            break
+                                except Exception:
+                                    pass
+                        for u_name in ["mem_info_vram_used", "mem_info_gtt_used"]:
+                            u_path = os.path.join(card_dev, u_name)
+                            if os.path.exists(u_path):
+                                try:
+                                    with open(u_path, "r") as f:
+                                        vram_used_bytes = int(f.read().strip())
+                                        if vram_used_bytes > 0:
+                                            break
+                                except Exception:
+                                    pass
+
+                        vram_total_mb = round(vram_total_bytes / (1024 * 1024), 1) if vram_total_bytes > 0 else 0.0
+                        vram_used_mb = round(vram_used_bytes / (1024 * 1024), 1) if vram_used_bytes > 0 else 0.0
+                        vram_total_gb = round(vram_total_bytes / (1024**3), 2) if vram_total_bytes > 0 else 0.0
+                        vram_used_gb = round(vram_used_bytes / (1024**3), 2) if vram_used_bytes > 0 else 0.0
+                        vram_percent = round((vram_used_bytes / vram_total_bytes) * 100.0, 1) if vram_total_bytes > 0 else 0.0
+
+                        gpu_name = f"Integrated / Discrete GPU ({card})"
+                        uevent_path = os.path.join(card_dev, "uevent")
+                        if os.path.exists(uevent_path):
+                            try:
+                                with open(uevent_path, "r") as f:
+                                    u_content = f.read()
+                                    if "DRIVER=amdgpu" in u_content:
+                                        gpu_name = f"AMD Radeon Graphics ({card})"
+                                    elif "DRIVER=i915" in u_content or "DRIVER=xe" in u_content:
+                                        gpu_name = f"Intel UHD/Iris Graphics ({card})"
+                            except Exception:
+                                pass
+
+                        gpus.append({
+                            "type": "amd_intel",
+                            "name": gpu_name,
+                            "usage_percent": usage,
+                            "vram_percent": vram_percent,
+                            "vram_used_gb": vram_used_gb,
+                            "vram_total_gb": vram_total_gb,
+                            "vram_used_mb": vram_used_mb,
+                            "vram_total_mb": vram_total_mb,
+                            "temp_c": 0.0
+                        })
+
+            if gpus:
+                active_gpu = max(gpus, key=lambda g: (g["usage_percent"], g["vram_used_gb"]))
+                gpu_vitals = {
+                    "available": True,
+                    "name": active_gpu["name"],
+                    "usage_percent": active_gpu["usage_percent"],
+                    "vram_percent": active_gpu["vram_percent"],
+                    "vram_used_gb": active_gpu["vram_used_gb"],
+                    "vram_total_gb": active_gpu["vram_total_gb"],
+                    "vram_used_mb": active_gpu.get("vram_used_mb", round(active_gpu["vram_used_gb"] * 1024.0, 1)),
+                    "vram_total_mb": active_gpu.get("vram_total_mb", round(active_gpu["vram_total_gb"] * 1024.0, 1)),
+                    "temp_c": active_gpu["temp_c"],
+                    "all_gpus": gpus
+                }
+        except Exception:
+            pass
+
         os_info = get_os_details()
 
         return {
@@ -153,6 +269,7 @@ except ImportError:
                 "used_mb": round(swap.used / 1024 / 1024),
                 "percent": swap.percent
             },
+            "gpu": gpu_vitals,
             "disk": {
                 "total_gb": round(disk_part.total / 1024 / 1024 / 1024, 1),
                 "used_gb": round(disk_part.used / 1024 / 1024 / 1024, 1),
@@ -257,9 +374,11 @@ def get_device_ip() -> str:
 
 
 class AgentClient:
-    def __init__(self, hub_url: str = None, enroll_token: str = None):
+    def __init__(self, hub_url: str = None, enroll_token: str = None, admin_user: str = None, admin_pass: str = None):
         raw_hub = hub_url or os.environ.get("HUB_URL") or "ws://127.0.0.1:15000"
         raw_token = enroll_token or os.environ.get("ENROLL_TOKEN") or get_persisted_token()
+        self.admin_user = (admin_user or os.environ.get("ADMIN_USER") or "").strip(' "\'')
+        self.admin_pass = (admin_pass or os.environ.get("ADMIN_PASS") or "").strip(' "\'')
         hub = raw_hub.strip(' "\'')
         if hub.startswith("http://"):
             hub = "ws://" + hub[7:]
@@ -279,20 +398,30 @@ class AgentClient:
         os_info = get_os_details()
         ip_addr = get_device_ip()
 
-        token_query = f"?token={self.enroll_token}" if self.enroll_token else ""
+        query_parts = []
+        if self.enroll_token:
+            query_parts.append(f"token={self.enroll_token}")
+        if self.admin_user and self.admin_pass:
+            import urllib.parse
+            query_parts.append(f"admin_user={urllib.parse.quote(self.admin_user)}")
+            query_parts.append(f"admin_pass={urllib.parse.quote(self.admin_pass)}")
+
+        token_query = f"?{'&'.join(query_parts)}" if query_parts else ""
         target_url = f"{self.hub_url}/ws/agent/{self.device_id}{token_query}"
 
         while self.running:
             try:
                 logger.info(f"Connecting to Central Fleet Hub at {target_url}...")
-                async with websockets.connect(target_url, open_timeout=20, ping_interval=20, ping_timeout=20) as ws:
+                async with websockets.connect(target_url, open_timeout=20, ping_interval=15, ping_timeout=45) as ws:
                     logger.info("Connected to Fleet Hub! Sending handshake registration...")
                     
                     handshake = {
                         "hostname": os_info.get("hostname", platform.node()),
                         "ip": ip_addr,
                         "distro_name": os_info.get("distro_name", "Linux"),
-                        "distro_id": os_info.get("distro_id", "linux")
+                        "distro_id": os_info.get("distro_id", "linux"),
+                        "admin_user": self.admin_user,
+                        "admin_pass": self.admin_pass
                     }
                     await ws.send(json.dumps(handshake))
 
@@ -300,13 +429,16 @@ class AgentClient:
                     async def stream_vitals():
                         count = 0
                         while self.running:
-                            snapshot = get_vitals_snapshot()
-                            await ws.send(json.dumps(snapshot))
-                            count += 1
-                            if count == 1:
-                                logger.info("Handshake acknowledged! Real-time vitals streaming live to master hub.")
-                            elif count % 20 == 0:
-                                logger.info(f"Streamed {count} vitals telemetry cycles to master hub.")
+                            try:
+                                snapshot = get_vitals_snapshot()
+                                await ws.send(json.dumps(snapshot))
+                                count += 1
+                                if count == 1:
+                                    logger.info("Handshake acknowledged! Real-time vitals streaming live to master hub.")
+                                elif count % 20 == 0:
+                                    logger.info(f"Streamed {count} vitals telemetry cycles to master hub.")
+                            except Exception as e:
+                                logger.warning(f"Transient error streaming vitals: {e}")
                             await asyncio.sleep(1.5)
 
                     async def listen_commands():
@@ -368,5 +500,18 @@ class AgentClient:
                 await asyncio.sleep(4.0)
 
 if __name__ == "__main__":
-    client = AgentClient()
+    import argparse
+    parser = argparse.ArgumentParser(description="PulseLinux Fleet Telemetry Streamer Agent")
+    parser.add_argument("--hub", default=os.environ.get("HUB_URL"), help="Master Hub WebSocket or HTTP URL")
+    parser.add_argument("--token", default=os.environ.get("ENROLL_TOKEN"), help="Device enrollment token or PIN")
+    parser.add_argument("--admin", default=os.environ.get("ADMIN_USER"), help="Admin username to bind device to")
+    parser.add_argument("--password", default=os.environ.get("ADMIN_PASS"), help="Admin password for authentication")
+    args = parser.parse_args()
+
+    client = AgentClient(
+        hub_url=args.hub,
+        enroll_token=args.token,
+        admin_user=args.admin,
+        admin_pass=args.password
+    )
     asyncio.run(client.start())

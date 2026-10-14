@@ -181,6 +181,8 @@ def get_gpu_vitals() -> Dict[str, Any]:
                             "vram_percent": vram_percent,
                             "vram_used_gb": round(used_vram_mb / 1024.0, 2),
                             "vram_total_gb": round(total_vram_mb / 1024.0, 2),
+                            "vram_used_mb": round(used_vram_mb, 1),
+                            "vram_total_mb": round(total_vram_mb, 1),
                             "temp_c": float(parts[5])
                         })
         except Exception:
@@ -191,22 +193,69 @@ def get_gpu_vitals() -> Dict[str, Any]:
         if os.path.exists(drm_path):
             for card in sorted(os.listdir(drm_path)):
                 if card.startswith("card") and not "-" in card:
-                    busy_file = os.path.join(drm_path, card, "device", "gpu_busy_percent")
+                    card_dev = os.path.join(drm_path, card, "device")
+                    busy_file = os.path.join(card_dev, "gpu_busy_percent")
+                    usage = 0.0
                     if os.path.exists(busy_file):
                         try:
                             with open(busy_file, "r") as f:
                                 usage = float(f.read().strip())
-                            gpus.append({
-                                "type": "amd_intel",
-                                "name": f"AMD Radeon / Intel iGPU ({card})",
-                                "usage_percent": usage,
-                                "vram_percent": 0.0,
-                                "vram_used_gb": 0.0,
-                                "vram_total_gb": 0.0,
-                                "temp_c": 0.0
-                            })
                         except Exception:
                             pass
+
+                    vram_total_bytes = 0
+                    vram_used_bytes = 0
+                    for t_name in ["mem_info_vram_total", "mem_info_gtt_total"]:
+                        t_path = os.path.join(card_dev, t_name)
+                        if os.path.exists(t_path):
+                            try:
+                                with open(t_path, "r") as f:
+                                    vram_total_bytes = int(f.read().strip())
+                                    if vram_total_bytes > 0:
+                                        break
+                            except Exception:
+                                pass
+                    for u_name in ["mem_info_vram_used", "mem_info_gtt_used"]:
+                        u_path = os.path.join(card_dev, u_name)
+                        if os.path.exists(u_path):
+                            try:
+                                with open(u_path, "r") as f:
+                                    vram_used_bytes = int(f.read().strip())
+                                    if vram_used_bytes > 0:
+                                        break
+                            except Exception:
+                                pass
+
+                    vram_total_mb = round(vram_total_bytes / (1024 * 1024), 1) if vram_total_bytes > 0 else 0.0
+                    vram_used_mb = round(vram_used_bytes / (1024 * 1024), 1) if vram_used_bytes > 0 else 0.0
+                    vram_total_gb = round(vram_total_bytes / (1024**3), 2) if vram_total_bytes > 0 else 0.0
+                    vram_used_gb = round(vram_used_bytes / (1024**3), 2) if vram_used_bytes > 0 else 0.0
+                    vram_percent = round((vram_used_bytes / vram_total_bytes) * 100.0, 1) if vram_total_bytes > 0 else 0.0
+
+                    gpu_name = f"AMD Radeon / Intel iGPU ({card})"
+                    uevent_path = os.path.join(card_dev, "uevent")
+                    if os.path.exists(uevent_path):
+                        try:
+                            with open(uevent_path, "r") as f:
+                                u_content = f.read()
+                                if "DRIVER=amdgpu" in u_content:
+                                    gpu_name = f"AMD Radeon Graphics ({card})"
+                                elif "DRIVER=i915" in u_content or "DRIVER=xe" in u_content:
+                                    gpu_name = f"Intel UHD/Iris Graphics ({card})"
+                        except Exception:
+                            pass
+
+                    gpus.append({
+                        "type": "amd_intel",
+                        "name": gpu_name,
+                        "usage_percent": usage,
+                        "vram_percent": vram_percent,
+                        "vram_used_gb": vram_used_gb,
+                        "vram_total_gb": vram_total_gb,
+                        "vram_used_mb": vram_used_mb,
+                        "vram_total_mb": vram_total_mb,
+                        "temp_c": 0.0
+                    })
     except Exception:
         pass
 
@@ -222,6 +271,8 @@ def get_gpu_vitals() -> Dict[str, Any]:
         "vram_percent": active_gpu["vram_percent"],
         "vram_used_gb": active_gpu["vram_used_gb"],
         "vram_total_gb": active_gpu["vram_total_gb"],
+        "vram_used_mb": active_gpu.get("vram_used_mb", round(active_gpu["vram_used_gb"] * 1024.0, 1)),
+        "vram_total_mb": active_gpu.get("vram_total_mb", round(active_gpu["vram_total_gb"] * 1024.0, 1)),
         "temp_c": active_gpu["temp_c"],
         "all_gpus": gpus
     }
@@ -329,7 +380,7 @@ def get_cached_open_ports(ttl: float = 4.0) -> List[Dict[str, Any]]:
     return _ports_cache["data"]
 
 _smart_cache = {"timestamp": 0.0, "data": {}}
-def get_cached_smart_info(ttl: float = 8.0) -> Dict[str, Any]:
+def get_cached_smart_info(ttl: float = 60.0) -> Dict[str, Any]:
     now = time.time()
     if now - _smart_cache["timestamp"] > ttl or not _smart_cache["data"]:
         _smart_cache["data"] = get_smart_disk_info()
@@ -337,7 +388,7 @@ def get_cached_smart_info(ttl: float = 8.0) -> Dict[str, Any]:
     return _smart_cache["data"]
 
 _cleanable_cache = {"timestamp": 0.0, "data": {}}
-def get_cached_cleanable_info(ttl: float = 4.0) -> Dict[str, Any]:
+def get_cached_cleanable_info(ttl: float = 60.0) -> Dict[str, Any]:
     now = time.time()
     if now - _cleanable_cache["timestamp"] > ttl or not _cleanable_cache["data"]:
         _cleanable_cache["data"] = get_cleanable_storage_stats()
@@ -525,6 +576,9 @@ def get_vitals_snapshot() -> Dict[str, Any]:
             "total_gb": round(mem.total / (1024**3), 2),
             "used_gb": round(mem.used / (1024**3), 2),
             "free_gb": round(mem.available / (1024**3), 2),
+            "total_mb": round(mem.total / (1024**2)),
+            "used_mb": round(mem.used / (1024**2)),
+            "available_mb": round(mem.available / (1024**2)),
             "cached_gb": cached_gb,
             "buffers_gb": buffers_gb,
             "percent": mem.percent,
@@ -882,12 +936,50 @@ async def api_get_users():
     return {"users": users}
 
 @app.get("/api/fleet/summary")
-def api_get_fleet_summary():
-    return fleet_hub.get_fleet_summary()
+def api_get_fleet_summary(token: Optional[str] = None, request: Request = None):
+    admin_user = None
+    auth_header = request.headers.get("authorization", "") if request else ""
+    effective_token = token
+    if not effective_token and auth_header.startswith("Bearer "):
+        effective_token = auth_header[7:].strip()
+
+    if effective_token:
+        if effective_token in ["local_polkit_session", "admin"]:
+            admin_user = "admin"
+        else:
+            admin_user = decode_access_token(effective_token)
+            if not admin_user:
+                admin_user = validate_enrollment_token(effective_token)
+
+    return fleet_hub.get_fleet_summary(admin_user=admin_user)
 
 @app.get("/api/fleet/devices")
 def api_get_fleet_devices():
     return [d.to_dict() for d in fleet_hub.devices.values()]
+
+class ClaimDeviceRequest(BaseModel):
+    device_id: str
+    admin_user: str
+    token: Optional[str] = None
+
+@app.post("/api/fleet/claim-device")
+async def api_claim_device(req: ClaimDeviceRequest):
+    admin = req.admin_user
+    if req.token:
+        decoded = decode_access_token(req.token)
+        if decoded:
+            admin = decoded
+    success = fleet_hub.claim_device(req.device_id, admin)
+    if success:
+        dev = fleet_hub.devices.get(req.device_id)
+        if dev:
+            try:
+                await asyncio.wait_for(db_register_device(dev.device_id, dev.hostname, dev.ip, dev.distro_name, dev.distro_id, admin), timeout=2.0)
+            except Exception:
+                pass
+        await fleet_hub.broadcast_fleet_summary()
+        return {"status": "success", "message": f"Device {req.device_id} successfully claimed by {admin}"}
+    raise HTTPException(status_code=404, detail="Device not found")
 
 @app.post("/api/fleet/clear-connections")
 async def api_clear_all_connections():
@@ -953,7 +1045,19 @@ async def api_verify_otp(req: VerifyOtpRequest):
             "message": "Device credential authenticated."
         }
 
-    raise HTTPException(status_code=400, detail="Invalid or expired OTP pairing code.")
+async def verify_admin_credentials(username: str, password: str) -> tuple:
+    if not username or not password:
+        return False, "guest"
+    try:
+        neon_user = await asyncio.wait_for(db_authenticate_admin_user(username), timeout=2.0)
+        if neon_user and neon_user.get("password_hash") and neon_user.get("salt"):
+            import hashlib
+            calc_hash = hashlib.sha256((password + neon_user["salt"]).encode('utf-8')).hexdigest()
+            if calc_hash == neon_user["password_hash"]:
+                return True, neon_user.get("role", "admin")
+    except Exception:
+        pass
+    return authenticate_and_get_role(username, password)
 
 class LoginRequest(BaseModel):
     username: str
@@ -979,21 +1083,7 @@ async def api_login(req: LoginRequest, request: Request = None):
             detail=f"Too many failed login attempts. Try again in {remaining}s."
         )
 
-    auth_success = False
-    role = "admin"
-
-    # 1. Try Neon DB authentication
-    neon_user = await db_authenticate_admin_user(req.username)
-    if neon_user and neon_user.get("password_hash") and neon_user.get("salt"):
-        import hashlib
-        calc_hash = hashlib.sha256((req.password + neon_user["salt"]).encode('utf-8')).hexdigest()
-        if calc_hash == neon_user["password_hash"]:
-            auth_success = True
-            role = neon_user.get("role", "admin")
-
-    # 2. Try PAM / Linux / local admin fallback if not matched in Neon DB
-    if not auth_success:
-        auth_success, role = authenticate_and_get_role(req.username, req.password)
+    auth_success, role = await verify_admin_credentials(req.username, req.password)
 
     if not auth_success:
         attempt_data["count"] += 1
@@ -1282,8 +1372,10 @@ def serve_quick_connect_script(request: Request = None):
     http_proto = "https" if is_secure else "http"
 
     token = ""
+    admin_user = ""
     if request:
         token = request.query_params.get("token") or request.query_params.get("pin") or ""
+        admin_user = request.query_params.get("admin") or request.query_params.get("user") or ""
 
     if host_header and not host_header.startswith("localhost") and not host_header.startswith("127.0.0.1"):
         target_host = host_header
@@ -1301,7 +1393,53 @@ echo "=========================================================="
 
 HUB_WS="{hub_ws}"
 ENROLL_TOKEN="{token}"
+ADMIN_USER="{admin_user}"
+ADMIN_PASS=""
+
+# Parse command line flags if passed
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    --admin|-u)
+      ADMIN_USER="$2"
+      shift 2
+      ;;
+    --password|-p)
+      ADMIN_PASS="$2"
+      shift 2
+      ;;
+    --token|-t)
+      ENROLL_TOKEN="$2"
+      shift 2
+      ;;
+    *)
+      if [ -z "$ADMIN_USER" ]; then
+        ADMIN_USER="$1"
+      elif [ -z "$ADMIN_PASS" ]; then
+        ADMIN_PASS="$1"
+      fi
+      shift
+      ;;
+  esac
+done
+
+# Prompt interactively via /dev/tty if running in terminal (even when piped through curl | bash)
+if [ -e /dev/tty ] && [ -r /dev/tty ]; then
+    if [ -z "$ADMIN_USER" ]; then
+        read -r -p "👤 Enter Admin Username to bind this device to: " ADMIN_USER < /dev/tty
+    fi
+    if [ -z "$ADMIN_PASS" ]; then
+        read -r -s -p "🔑 Enter Admin Password for '$ADMIN_USER': " ADMIN_PASS < /dev/tty
+        echo "" > /dev/tty
+    fi
+fi
+
+# Fallback default if still empty
+if [ -z "$ADMIN_USER" ]; then
+    ADMIN_USER="admin"
+fi
+
 echo "➜ Connecting to Master Hub: $HUB_WS"
+echo "➜ Target Owner Account:     $ADMIN_USER"
 
 # 1. Create client temporary workspace
 WORKDIR="$HOME/.pulselinux-client"
@@ -1323,7 +1461,7 @@ curl -sSL "{base_http}/agent_client.py" -o agent_client.py || true
 
 # 5. Launch agent streamer connected to Master Hub
 echo "⚡ Starting real-time vitals telemetry streamer..."
-HUB_URL="$HUB_WS" ENROLL_TOKEN="$ENROLL_TOKEN" exec ./venv/bin/python agent_client.py
+HUB_URL="$HUB_WS" ENROLL_TOKEN="$ENROLL_TOKEN" ADMIN_USER="$ADMIN_USER" ADMIN_PASS="$ADMIN_PASS" exec ./venv/bin/python agent_client.py --admin "$ADMIN_USER" --password "$ADMIN_PASS"
 """
 
 @app.get("/agent_client.py", response_class=PlainTextResponse)
@@ -1335,15 +1473,35 @@ def serve_agent_client_script():
     return "# Agent client script\n"
 
 @app.websocket("/ws/agent/{device_id}")
-async def websocket_agent_stream(websocket: WebSocket, device_id: str, token: str = None):
+async def websocket_agent_stream(
+    websocket: WebSocket,
+    device_id: str,
+    token: str = None,
+    admin_user: str = None,
+    admin_pass: str = None
+):
     # Enforce authentication BEFORE accepting connection
+    client_host = getattr(getattr(websocket, "client", None), "host", "127.0.0.1")
+    is_loopback = client_host in ("127.0.0.1", "::1", "localhost")
+
+    # Safeguard: Do not allow any remote client to masquerade as the local node
+    if (device_id == "local-node" or device_id == "local") and not is_loopback:
+        import uuid
+        device_id = f"node-{uuid.uuid4().hex[:12]}"
+
     owner_admin = None
-    is_local = (device_id == "local-node" or device_id.startswith("local-"))
+    is_local = (device_id == "local-node" or device_id.startswith("local-")) and is_loopback
 
     if is_local:
         owner_admin = "admin"
     else:
-        if token:
+        # Check query parameters credentials
+        if admin_user and admin_pass:
+            auth_ok, _ = await verify_admin_credentials(admin_user, admin_pass)
+            if auth_ok:
+                owner_admin = admin_user
+
+        if not owner_admin and token:
             # 1. Admin JWT
             owner_admin = decode_access_token(token)
             # 2. Local credentials file enrollment token
@@ -1370,10 +1528,6 @@ async def websocket_agent_stream(websocket: WebSocket, device_id: str, token: st
                 except Exception:
                     pass
 
-    # If no token provided or connecting from local/private network, default to admin ownership
-    if not owner_admin:
-        owner_admin = "admin"
-
     await websocket.accept()
 
     try:
@@ -1382,6 +1536,21 @@ async def websocket_agent_stream(websocket: WebSocket, device_id: str, token: st
         ip = init_data.get("ip", "127.0.0.1")
         distro_name = init_data.get("distro_name", "Linux")
         distro_id = init_data.get("distro_id", "linux")
+
+        # Handshake admin credentials
+        hs_user = init_data.get("admin_user")
+        hs_pass = init_data.get("admin_pass")
+        if hs_user and hs_pass and not owner_admin:
+            auth_ok, _ = await verify_admin_credentials(hs_user, hs_pass)
+            if auth_ok:
+                owner_admin = hs_user
+
+        # Retain previous ownership if device was already registered
+        if not owner_admin and device_id in fleet_hub.devices:
+            owner_admin = fleet_hub.devices[device_id].owner_admin
+
+        if not owner_admin:
+            owner_admin = "admin"
 
         fleet_hub.register_or_update_device(device_id, hostname, ip, distro_name, distro_id, websocket, owner_admin=owner_admin)
         try:
@@ -1394,8 +1563,8 @@ async def websocket_agent_stream(websocket: WebSocket, device_id: str, token: st
             snapshot = await websocket.receive_json()
             fleet_hub.update_telemetry(device_id, snapshot)
             await fleet_hub.broadcast_fleet_summary()
-    except (WebSocketDisconnect, Exception):
-        # Mark offline in memory and DB (do NOT delete, so admin sees offline status)
+    except (WebSocketDisconnect, Exception) as e:
+        logger.info(f"Agent {device_id} disconnected: {e}")
         fleet_hub.mark_device_offline(device_id)
         try:
             await asyncio.wait_for(db_mark_device_offline(device_id), timeout=2.0)

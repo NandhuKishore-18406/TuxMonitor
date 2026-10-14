@@ -1,0 +1,231 @@
+================================================================================
+ PULSELINUX SYSTEM VITALS & FLEET MONITOR - FULL-STACK SYSTEM OVERVIEW & WORK LOG
+================================================================================
+Generated: 2026-10-14
+Author: Antigravity AI Engineering & Nandhu
+Location: /home/nandhu/projects/system-vitals-monitor/FULLSTACK_SYSTEM_OVERVIEW_AND_ARCHITECTURE.txt
+
+--------------------------------------------------------------------------------
+1. EXECUTIVE SUMMARY & SYSTEM OVERVIEW
+--------------------------------------------------------------------------------
+The PulseLinux System Vitals & Fleet Monitor is a high-performance, real-time,
+distributed Linux monitoring workstation. It combines a retro-themed desktop
+operating system GUI (inspired by classic Windows NT 4 / Unix CDE Workstations)
+with a high-concurrency asynchronous backend stack.
+
+The system is designed to monitor both the local host workstation and an entire
+fleet of remote Linux nodes (e.g., Arch Linux, Ubuntu, Debian, CachyOS, Fedora)
+over local area networks (LAN), virtual private networks (VPN), or WAN.
+
+Core Capabilities:
+  • Real-time Telemetry: Sub-second streaming of CPU load, per-core utilization,
+    memory (RAM in GB & MB), GPU utilization & VRAM (NVIDIA, AMD Radeon, Intel),
+    network I/O, storage utilization, and thermal sensors.
+  • Distributed Fleet Management: Remote Linux client agents stream their metrics
+    live via WebSockets to a central Master Hub.
+  • Retro Desktop Window Manager: Draggable, resizable, minimizable, and
+    maximizable windows with a functional taskbar, system tray, and start menu.
+  • Diagnostics & Remote Remediation: Automated disk SMART health scanning,
+    systemd service recovery, journal log vacuuming, and package cache pruning.
+  • Hybrid Persistence: Ephemeral in-memory hub manager with persistent backups
+    in Neon Serverless PostgreSQL for device enrollment, OTPs, and auth.
+
+--------------------------------------------------------------------------------
+2. FULL-STACK ARCHITECTURE
+--------------------------------------------------------------------------------
+The project is architected across four distinct layers:
+
+[Remote Linux Nodes]         [Master Workstation]           [Cloud / Persistence]
+  +------------------+         +--------------------+         +-----------------+
+  | agent_client.py  | ===WS==>| FastAPI Master Hub | =======>| Neon PostgreSQL |
+  | (Daemon/CLI)     |         | (port 15000)       |         | (Serverless DB) |
+  +------------------+         +---------+----------+         +-----------------+
+                                         |
+                                         | REST / WS
+                                         v
+                               +--------------------+
+                               | React + Vite App   |
+                               | Retro Desktop GUI  |
+                               | (port 3000)        |
+                               +--------------------+
+
+A. FRONTEND LAYER (React 19 + Vite):
+   - Path: `frontend/src/App.jsx`, `frontend/src/index.css`
+   - Window Manager: Custom state-driven window manager simulating retro OS windows.
+     Supports window stacking (z-index), dragging via title bars, minimize to
+     taskbar, and full-screen maximization.
+   - Dual-WebSocket Streaming: Decoupled telemetry ingestion to eliminate re-render
+     storms. One dedicated WebSocket for active vitals, and one broadcast WebSocket
+     for live fleet status summaries.
+   - Applications Provided:
+       1. About System: Hardware specs, CPU model, RAM (GB/MB), dGPU & iGPU VRAM.
+       2. Task Manager: Performance graphs (CPU, RAM, dGPU, iGPU), process list,
+          listening ports, storage breakdown, and physical memory stats in GB/MB.
+       3. Terminal / CLI: Interactive command prompt interface.
+       4. Storage Explorer: Directory size breakdown and visual partition bars.
+       5. System Audit: Recoverable space analysis and automated diagnostic sweeps.
+       6. Alert Thresholds: Configured resource warning levels.
+       7. Connected Systems: Fleet manager displaying all enrolled machines,
+          their online/offline status, IP, RAM (GB/MB), GPU specs, and one-click
+          target switching.
+
+B. BACKEND MASTER HUB LAYER (Python 3.12 / FastAPI):
+   - Path: `backend/main.py`, `backend/hub_manager.py`
+   - High-throughput asynchronous server running on Uvicorn.
+   - Hardware Extraction Engine:
+       • CPU & Memory: Reads `/proc/cpuinfo`, `/proc/loadavg`, and `psutil`.
+       • Graphics (GPUs): Queries `nvidia-smi` for NVIDIA discrete GPUs and
+         scans Linux kernel sysfs `/sys/class/drm/card*/device/` for AMD Radeon
+         and Intel integrated/discrete GPUs, reading hardware usage percentages
+         and VRAM directly (`mem_info_vram_total`, `mem_info_vram_used`).
+       • Disk & Storage: Caches SMART drive health (`smartctl`) and cleanable
+         journal/package logs with a 60-second TTL to avoid disk thrashing.
+   - Hub Manager (`FleetHubManager`):
+       • Maintains active WebSocket connections from remote agents and admin GUIs.
+       • Tracks heartbeat `last_seen` timestamps with a 30-second resilience
+         window to prevent connection flickering.
+       • Broadcasts fleet summary updates in real time to connected dashboards.
+
+C. REMOTE FLEET AGENT LAYER:
+   - Path: `backend/agent_client.py`, dynamic installers at `/connect.sh` and `/pair/{pin}`
+   - Self-contained, lightweight Python daemon designed to run on any Linux distribution.
+   - Zero-dependency fallback: Uses pure Python standard library and `psutil` + `websockets`.
+   - Automatically gathers local OS info, machine ID, CPU, memory, GPU (NVIDIA & AMD/Intel DRM),
+     storage, and thermal metrics, streaming them every 1.5 seconds.
+   - Features remote command execution for automated remediation (restarting broken
+     systemd units, vacuuming journal logs, clean package cache).
+
+D. PERSISTENCE & AUTHENTICATION LAYER:
+   - Path: `backend/database.py`, `backend/auth.py`
+   - Neon Serverless PostgreSQL with `asyncpg` connection pooling.
+   - Stores admin accounts, registered devices, persistent access tokens, and
+     time-limited enrollment PINs / OTPs.
+   - Implements strict 2-second async timeouts on all database queries to ensure
+     a slow network connection to the cloud database never freezes local telemetry.
+
+--------------------------------------------------------------------------------
+3. FULL WORK LOG: WHAT WAS FIXED & IMPLEMENTED
+--------------------------------------------------------------------------------
+
+--------------------------------------------------------------------------------
+Problem 1: Connection Unreliability & Process Storms
+--------------------------------------------------------------------------------
+- Symptoms: Remote devices failed to connect; local workstation telemetry
+  frequently froze; WebSocket connections hung or were rejected.
+- Root Cause Analysis:
+  1. Frontend Infinite Re-render Loop: In `frontend/src/App.jsx`, telemetry
+     state (`vitals`) was bundled with `fleetSummary` polling. Whenever a poll
+     resolved, it re-rendered all child graphs, which triggered duplicate polls.
+  2. Fork Bomb via sudo smartctl and du: The backend was executing `du -sh ~`
+     and `sudo smartctl` every 2-4 seconds. This rapidly created hundreds of
+     subprocesses, exhausting systemd's default `TasksMax=50` limit on the service.
+  3. Cloud Database Stalls: When an agent connected, the server awaited Neon
+     PostgreSQL without a timeout. If Neon took >5 seconds to wake up from cold
+     sleep, the agent's WebSocket handshake timed out.
+  4. Firewall: UFW was blocking inbound connections on port 15000 and 3000.
+- Fixes Applied:
+  • Decoupled frontend WebSockets: Dedicated local telemetry stream decoupled from
+    the fleet summary poller.
+  • Cached SMART and Storage queries: Implemented in-memory caching with 60-second
+    TTL for `smartctl` and `cleanable_storage`, stopping subprocess storms.
+  • Systemd cgroup limits increased: In `pulse-vitals-backend.service`, raised
+    `TasksMax=200`, `MemoryMax=512M`, and `CPUQuota=60%`.
+  • Non-blocking database operations: Wrapped all Neon DB queries in
+    `asyncio.wait_for(..., timeout=2.0)`.
+  • Firewall rules opened: Executed `ufw allow 15000/tcp` and `ufw allow 3000/tcp`.
+
+--------------------------------------------------------------------------------
+Problem 2: Local System Option Changing to Remote Device & Becoming Unselectable
+--------------------------------------------------------------------------------
+- Symptoms: As soon as a remote device (e.g. Toothless) connected, the Local
+  Machine entry in "Connected Systems" and the Start Menu displayed the remote
+  device's hostname instead of the host machine, and the local machine could
+  not be re-selected.
+- Root Cause Analysis:
+  1. The frontend stored all vitals in a single `vitals` state. When inspecting
+     Toothless, `setVitals(remoteVitals)` was invoked.
+  2. The Local Machine cards in the UI rendered `{vitals?.sys_info?.hostname}`.
+     Because `vitals` held the remote device's payload, the local card adopted
+     the remote machine's name.
+  3. Identifier Mismatch: The backend designated the local host as `local-node`,
+     but the inspect button checked `selectedDeviceId === 'local'`.
+  4. Potential Hijack: A remote client could technically register as `local-node`.
+- Fixes Applied:
+  • Dedicated `localVitals` and `localNode` State: Added isolated state in
+    `frontend/src/App.jsx` specifically for the local machine.
+  • UI Isolation: Bound the Local Machine card and Start Menu strictly to
+    `localNode?.hostname || localVitals?.sys_info?.hostname || 'Host Workstation'`.
+  • Unified Selector: Created `isLocalSelected = selectedDeviceId === 'local' || selectedDeviceId === 'local-node'`.
+  • Remote Spoofing Shield: In `backend/main.py`, added a network origin check
+    rejecting any non-loopback WebSocket client attempting to use `device_id="local-node"`.
+
+--------------------------------------------------------------------------------
+Problem 3: Remote Device Flickering Between Online and Offline
+--------------------------------------------------------------------------------
+- Symptoms: The remote device card constantly flipped green (ONLINE) and red (OFFLINE).
+- Root Cause Analysis:
+  1. Aggressive Heartbeat Timeout: `is_online()` in `hub_manager.py` had a 10.0s
+     threshold. If a remote machine had a minor 5-second network jitter or high load,
+     the hub flagged it offline.
+  2. State Wipe on Offline: `to_dict()` in `hub_manager.py` wiped `latest_vitals`
+     to `{}` whenever `is_online()` evaluated to false for even one second.
+     This caused the UI to lose all metrics, zeroing out CPU and RAM graphs.
+  3. Unhandled Stream Errors: In `backend/agent_client.py`, the `stream_vitals`
+     loop had no try/except around `get_vitals_snapshot()`. Any single exception
+     terminated the asyncio task, closing the WebSocket connection and triggering
+     a 4-second reconnect cycle.
+  4. WebSocket Ping Timeout: Default `ping_interval=20, ping_timeout=20` was too
+     strict during bursty network activity.
+- Fixes Applied:
+  • Increased Heartbeat Window: Changed `is_online(timeout=30.0)` in `hub_manager.py`.
+  • Preserved Telemetry: `to_dict()` now retains `self.latest_vitals` during transient
+    disconnects so graphs and cards remain populated.
+  • Stream Loop Resilience: Wrapped snapshot extraction and transmission in
+    `try / except Exception` inside `agent_client.py`, preventing task death.
+  • Relaxed Ping Timers: Updated `agent_client.py` to `ping_interval=15, ping_timeout=45`.
+
+--------------------------------------------------------------------------------
+Problem 4: Showing RAM and Graphics in GB / MB
+--------------------------------------------------------------------------------
+- Symptoms: Memory was shown in raw kilobytes (like Windows NT 4 Task Manager) or
+  only as a percentage; GPU VRAM was not displayed in GB/MB.
+- Root Cause Analysis:
+  1. Task Manager displayed `Physical Memory (K)` with raw kilobyte integers.
+  2. AMD and Intel graphics in `main.py` only read `gpu_busy_percent`, leaving
+     `vram_total_gb` and `vram_used_gb` at 0.0.
+  3. `agent_client.py` did not collect GPU telemetry for remote devices.
+- Fixes Applied:
+  • Linux DRM Sysfs VRAM Reader: In `backend/main.py` and `backend/agent_client.py`,
+    implemented automated discovery of AMD and Intel GPU memory via
+    `/sys/class/drm/card*/device/mem_info_vram_total` and `mem_info_vram_used`.
+  • Dual Unit Display (GB & MB):
+      - About System (App 1):
+          RAM: Total, Used, and Available formatted in both GB and MB.
+          dGPU & iGPU: Dedicated VRAM total, used, usage %, and temperature.
+      - Task Manager (App 2):
+          Performance Tab: Memory graph header displays Used GB / Total GB.
+          dGPU / iGPU boxes display VRAM used/total GB.
+          Physical Memory Box: Total, Used, and Available in GB and MB.
+          VRAM & Swap Box: dGPU VRAM, iGPU VRAM, and Swap space in GB and MB.
+      - Connected Systems (App 7):
+          Local and Remote device cards display CPU %, RAM % (Used/Total GB),
+          and GPU name with VRAM in GB.
+
+--------------------------------------------------------------------------------
+4. VERIFICATION & RUNNING SERVICES
+--------------------------------------------------------------------------------
+• Backend Daemon:
+    - Service: `pulse-vitals-backend.service` (Active, PID 30014)
+    - Port: `0.0.0.0:15000`
+    - Response time: ~5ms
+• Frontend Web Application:
+    - Server: Vite Dev Server (Active, PID 17276)
+    - Port: `0.0.0.0:3000` (Local: http://localhost:3000, LAN: http://10.236.124.154:3000)
+    - Production Bundle: Compiled via `npm run build` to `frontend/dist/`
+• Remote Node Status:
+    - Device: "Toothless" (Arch Linux, Kernel 7.2.6-arch2-1, IP: 10.236.124.212)
+    - Status: Online, actively streaming vitals and telemetry cycles.
+
+================================================================================
+END OF DOCUMENTATION
+================================================================================

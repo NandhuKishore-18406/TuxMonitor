@@ -200,7 +200,8 @@ export default function App() {
 
   const wsRef = useRef(null);
 
-  const [selectedDeviceId, setSelectedDeviceId] = useState('local');
+  const [selectedDeviceId, setSelectedDeviceId] = useState('local-node');
+  const [localVitals, setLocalVitals] = useState(null);
   const [fleetSummary, setFleetSummary] = useState({ total_count: 1, online_count: 1, offline_count: 0, devices: [] });
 
   const [adminUser, setAdminUser] = useState(localStorage.getItem('admin_user') || 'nandhu');
@@ -336,17 +337,22 @@ export default function App() {
     }
   };
 
-  const activeDevice = (fleetSummary.devices || []).find(d => d.device_id === selectedDeviceId) || 
-    (selectedDeviceId === 'local' || selectedDeviceId === 'local-node' 
-      ? { device_id: 'local-node', hostname: vitals?.sys_info?.hostname || 'Local Host', distro_name: vitals?.sys_info?.distro_name || 'Linux', status: 'online' }
-      : null);
+  const isLocalSelected = selectedDeviceId === 'local' || selectedDeviceId === 'local-node';
+  const localNode = (fleetSummary.devices || []).find(d => d.device_id === 'local-node');
+  const activeDevice = isLocalSelected
+    ? (localNode || { device_id: 'local-node', hostname: localNode?.hostname || localVitals?.sys_info?.hostname || 'Local Host', distro_name: localNode?.distro_name || localVitals?.sys_info?.distro_name || 'Linux', status: 'online' })
+    : ((fleetSummary.devices || []).find(d => d.device_id === selectedDeviceId) || null);
 
   // Live Fleet Summary WebSocket & Periodic Polling Fallback
   useEffect(() => {
     let isMounted = true;
+    const effectiveToken = adminToken || 'local_polkit_session';
     const fetchSummary = async () => {
       try {
-        const res = await fetch('/api/fleet/summary');
+        const url = `/api/fleet/summary?token=${encodeURIComponent(effectiveToken)}`;
+        const res = await fetch(url, {
+          headers: { Authorization: `Bearer ${effectiveToken}` }
+        });
         if (res.ok && isMounted) {
           const data = await res.json();
           setFleetSummary(data);
@@ -357,7 +363,6 @@ export default function App() {
     const pollInterval = setInterval(fetchSummary, 2000);
 
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const effectiveToken = adminToken || 'local_polkit_session';
     const adminWsUrl = `${protocol}//${window.location.host}/ws/fleet/admin?token=${effectiveToken}`;
     let ws;
     function connectFleet() {
@@ -402,7 +407,7 @@ export default function App() {
 
   // Dedicated Local Telemetry WebSocket stream (strictly decoupled from fleetSummary polling)
   useEffect(() => {
-    if (selectedDeviceId !== 'local' && selectedDeviceId !== 'local-node') {
+    if (!isLocalSelected) {
       return;
     }
 
@@ -423,6 +428,7 @@ export default function App() {
           if (isCancelled) return;
           try {
             const data = JSON.parse(event.data);
+            setLocalVitals(data);
             setVitals(data);
             if (data.filesystems && data.filesystems.length > 0) {
               setDfFilesystems(data.filesystems);
@@ -471,35 +477,43 @@ export default function App() {
         ws.close();
       }
     };
-  }, [selectedDeviceId]);
+  }, [isLocalSelected]);
 
-  // Remote Device Telemetry Sync (only updates when a remote node is selected)
+  // When switching between devices, immediately restore cached vitals
   useEffect(() => {
-    if (selectedDeviceId === 'local' || selectedDeviceId === 'local-node') {
-      return;
+    if (isLocalSelected) {
+      const target = localVitals || localNode?.latest_vitals;
+      if (target && Object.keys(target).length > 0) {
+        setVitals(target);
+        if (target.filesystems && target.filesystems.length > 0) setDfFilesystems(target.filesystems);
+        if (target.open_ports) setOpenPorts(target.open_ports);
+        setCleanableStorage(target.cleanable || null);
+        setSmartData(target.smart || null);
+        setDiagResults(target.diag || null);
+      }
+    } else {
+      const dev = (fleetSummary.devices || []).find(d => d.device_id === selectedDeviceId);
+      if (dev && dev.latest_vitals && Object.keys(dev.latest_vitals).length > 0) {
+        const v = dev.latest_vitals;
+        setVitals(v);
+        setHistory(prev => ({
+          cpu: [...prev.cpu.slice(-29), v.cpu?.percent ?? dev.vitals_summary?.cpu ?? 0],
+          ram: [...prev.ram.slice(-29), v.memory?.percent ?? dev.vitals_summary?.ram ?? 0],
+          gpu0: [...prev.gpu0.slice(-29), 0],
+          gpu1: [...prev.gpu1.slice(-29), 0],
+          netDown: [...prev.netDown.slice(-29), v.network?.down_kb_s || v.network?.download_kb_s || 0],
+          netUp: [...prev.netUp.slice(-29), v.network?.up_kb_s || v.network?.upload_kb_s || 0],
+          diskRead: [...prev.diskRead.slice(-29), v.disk?.read_kb_s || 0]
+        }));
+        if (v.filesystems && v.filesystems.length > 0) setDfFilesystems(v.filesystems);
+        if (v.open_ports) setOpenPorts(v.open_ports);
+        else setOpenPorts([]);
+        setCleanableStorage(v.cleanable || null);
+        setSmartData(v.smart || null);
+        setDiagResults(v.diag || null);
+      }
     }
-
-    const dev = (fleetSummary.devices || []).find(d => d.device_id === selectedDeviceId);
-    if (dev && dev.latest_vitals && Object.keys(dev.latest_vitals).length > 0) {
-      const v = dev.latest_vitals;
-      setVitals(v);
-      setHistory(prev => ({
-        cpu: [...prev.cpu.slice(-29), v.cpu?.percent ?? dev.vitals_summary?.cpu ?? 0],
-        ram: [...prev.ram.slice(-29), v.memory?.percent ?? dev.vitals_summary?.ram ?? 0],
-        gpu0: [...prev.gpu0.slice(-29), 0],
-        gpu1: [...prev.gpu1.slice(-29), 0],
-        netDown: [...prev.netDown.slice(-29), v.network?.down_kb_s || v.network?.download_kb_s || 0],
-        netUp: [...prev.netUp.slice(-29), v.network?.up_kb_s || v.network?.upload_kb_s || 0],
-        diskRead: [...prev.diskRead.slice(-29), v.disk?.read_kb_s || 0]
-      }));
-      if (v.filesystems && v.filesystems.length > 0) setDfFilesystems(v.filesystems);
-      if (v.open_ports) setOpenPorts(v.open_ports);
-      else setOpenPorts([]);
-      setCleanableStorage(v.cleanable || null);
-      setSmartData(v.smart || null);
-      setDiagResults(v.diag || null);
-    }
-  }, [selectedDeviceId, fleetSummary]);
+  }, [selectedDeviceId, fleetSummary, isLocalSelected]);
 
   // Window Manager Drag Handlers
   const handleMouseDownTitleBar = (appId, e) => {
@@ -864,22 +878,45 @@ export default function App() {
                       </div>
 
                       <div style={{ background: '#09090b', padding: '10px 12px', borderRadius: '4px', border: '1px solid #27272a' }}>
-                        <div style={{ fontSize: '0.68rem', color: '#71717a', textTransform: 'uppercase' }}>SYSTEM MEMORY</div>
-                        <div style={{ fontSize: '0.88rem', fontWeight: '700', color: '#f4f4f5', marginTop: '2px' }}>{(ramTotalMb / 1024).toFixed(1)} GB RAM</div>
+                        <div style={{ fontSize: '0.68rem', color: '#71717a', textTransform: 'uppercase' }}>SYSTEM MEMORY (RAM)</div>
+                        <div style={{ fontSize: '0.88rem', fontWeight: '700', color: '#f4f4f5', marginTop: '2px' }}>
+                          {(ramTotalMb / 1024).toFixed(1)} GB Total ({Math.round(ramTotalMb).toLocaleString()} MB)
+                        </div>
+                        <div style={{ fontSize: '0.72rem', color: '#a1a1aa', marginTop: '3px' }}>
+                          Used: <span style={{ color: '#f4f4f5', fontWeight: 'bold' }}>{(ramUsedMb / 1024).toFixed(1)} GB ({Math.round(ramUsedMb).toLocaleString()} MB)</span> • Available: <span style={{ color: '#4ade80', fontWeight: 'bold' }}>{(ramFreeMb / 1024).toFixed(1)} GB ({Math.round(ramFreeMb).toLocaleString()} MB)</span> ({vitals?.memory?.percent ?? 0}%)
+                        </div>
                       </div>
 
                       {/* Display Both Integrated and Discrete GPUs in About System */}
                       <div style={{ background: '#09090b', padding: '10px 12px', borderRadius: '4px', border: '1px solid #27272a' }}>
                         <div style={{ fontSize: '0.68rem', color: '#71717a', textTransform: 'uppercase' }}>DISCRETE GPU (dGPU)</div>
                         <div style={{ fontSize: '0.82rem', fontWeight: '700', color: '#f4f4f5', marginTop: '2px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                          {discreteGpu.name || (selectedDeviceId === 'local' ? 'NVIDIA Graphics' : 'Remote Graphics')}
+                          {discreteGpu.name || (isLocalSelected ? 'NVIDIA Graphics' : 'Remote Graphics')}
+                        </div>
+                        <div style={{ fontSize: '0.72rem', color: '#a1a1aa', marginTop: '3px' }}>
+                          {(discreteGpu.vram_total_gb || 0) > 0 || (discreteGpu.vram_total_mb || 0) > 0 ? (
+                            <span>
+                              VRAM: <strong style={{ color: '#f4f4f5' }}>{(discreteGpu.vram_used_gb || (discreteGpu.vram_used_mb / 1024) || 0).toFixed(1)} GB / {(discreteGpu.vram_total_gb || (discreteGpu.vram_total_mb / 1024) || 0).toFixed(1)} GB</strong> ({Math.round(discreteGpu.vram_used_mb || (discreteGpu.vram_used_gb * 1024) || 0)} / {Math.round(discreteGpu.vram_total_mb || (discreteGpu.vram_total_gb * 1024) || 0)} MB) • Load: <strong style={{ color: '#38bdf8' }}>{discreteGpu.usage_percent ?? 0}%</strong>{discreteGpu.temp_c ? ` • ${discreteGpu.temp_c}°C` : ''}
+                            </span>
+                          ) : (
+                            <span>Load: <strong style={{ color: '#38bdf8' }}>{discreteGpu.usage_percent ?? 0}%</strong> • Shared System Memory</span>
+                          )}
                         </div>
                       </div>
 
                       <div style={{ background: '#09090b', padding: '10px 12px', borderRadius: '4px', border: '1px solid #27272a' }}>
                         <div style={{ fontSize: '0.68rem', color: '#71717a', textTransform: 'uppercase' }}>INTEGRATED GPU (iGPU)</div>
                         <div style={{ fontSize: '0.82rem', fontWeight: '700', color: '#f4f4f5', marginTop: '2px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                          {integratedGpu.name || (selectedDeviceId === 'local' ? 'AMD Radeon / Intel iGPU' : 'Standard VGA')}
+                          {integratedGpu.name || (isLocalSelected ? 'AMD Radeon / Intel iGPU' : 'Standard VGA')}
+                        </div>
+                        <div style={{ fontSize: '0.72rem', color: '#a1a1aa', marginTop: '3px' }}>
+                          {(integratedGpu.vram_total_gb || 0) > 0 || (integratedGpu.vram_total_mb || 0) > 0 ? (
+                            <span>
+                              VRAM: <strong style={{ color: '#f4f4f5' }}>{(integratedGpu.vram_used_gb || (integratedGpu.vram_used_mb / 1024) || 0).toFixed(1)} GB / {(integratedGpu.vram_total_gb || (integratedGpu.vram_total_mb / 1024) || 0).toFixed(1)} GB</strong> ({Math.round(integratedGpu.vram_used_mb || (integratedGpu.vram_used_gb * 1024) || 0)} / {Math.round(integratedGpu.vram_total_mb || (integratedGpu.vram_total_gb * 1024) || 0)} MB) • Load: <strong style={{ color: '#38bdf8' }}>{integratedGpu.usage_percent ?? 0}%</strong>
+                            </span>
+                          ) : (
+                            <span>Load: <strong style={{ color: '#38bdf8' }}>{integratedGpu.usage_percent ?? 0}%</strong> • Dynamic Host Shared Memory</span>
+                          )}
                         </div>
                       </div>
                     </div>
@@ -905,7 +942,7 @@ export default function App() {
                           <div className="tm-frame-box">
                             <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.72rem', marginBottom: '4px' }}>
                               <span>MEM Usage History</span>
-                              <strong>{vitals?.memory?.percent ?? 0}%</strong>
+                              <strong>{vitals?.memory?.percent ?? 0}% ({(ramUsedMb / 1024).toFixed(1)} / {(ramTotalMb / 1024).toFixed(1)} GB)</strong>
                             </div>
                             <RetroLineGraph data={history.ram} height={50} maxVal={100} />
                           </div>
@@ -913,8 +950,8 @@ export default function App() {
                           {/* Discrete GPU (dGPU) Frame */}
                           <div className="tm-frame-box">
                             <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.7rem', marginBottom: '4px' }}>
-                              <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '180px' }}>dGPU: {discreteGpu.name || 'Discrete GPU'}</span>
-                              <strong>{discreteGpu.usage_percent ?? 0}%</strong>
+                              <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '170px' }}>dGPU: {discreteGpu.name || 'Discrete GPU'}</span>
+                              <strong>{discreteGpu.usage_percent ?? 0}% {(discreteGpu.vram_total_gb || 0) > 0 ? `(${(discreteGpu.vram_used_gb || 0).toFixed(1)}/${(discreteGpu.vram_total_gb).toFixed(1)} GB)` : ''}</strong>
                             </div>
                             <RetroLineGraph data={history.gpu0} height={50} maxVal={100} />
                           </div>
@@ -922,8 +959,8 @@ export default function App() {
                           {/* Integrated GPU (iGPU) Frame */}
                           <div className="tm-frame-box">
                             <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.7rem', marginBottom: '4px' }}>
-                              <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '180px' }}>iGPU: {integratedGpu.name || 'Integrated iGPU'}</span>
-                              <strong>{integratedGpu.usage_percent ?? 0}%</strong>
+                              <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '170px' }}>iGPU: {integratedGpu.name || 'Integrated iGPU'}</span>
+                              <strong>{integratedGpu.usage_percent ?? 0}% {(integratedGpu.vram_total_gb || 0) > 0 ? `(${(integratedGpu.vram_used_gb || 0).toFixed(1)}/${(integratedGpu.vram_total_gb).toFixed(1)} GB)` : ''}</strong>
                             </div>
                             <RetroLineGraph data={history.gpu1} height={50} maxVal={100} />
                           </div>
@@ -941,20 +978,20 @@ export default function App() {
                           </div>
 
                           <div className="tm-frame-box" style={{ marginBottom: 0 }}>
-                            <div className="tm-frame-title">Physical Memory (K)</div>
+                            <div className="tm-frame-title">Physical Memory (GB / MB)</div>
                             <div style={{ fontSize: '0.72rem', color: '#a1a1aa' }}>
-                              <div>Total: <strong style={{ color: '#f4f4f5' }}>{Math.round(ramTotalMb * 1024)}</strong></div>
-                              <div>Available: <strong style={{ color: '#f4f4f5' }}>{Math.round(ramFreeMb * 1024)}</strong></div>
-                              <div>Cache: <strong style={{ color: '#f4f4f5' }}>{Math.round((vitals?.memory?.cached_gb || 1) * 1024 * 1024)}</strong></div>
+                              <div>Total: <strong style={{ color: '#f4f4f5' }}>{(ramTotalMb / 1024).toFixed(2)} GB ({Math.round(ramTotalMb).toLocaleString()} MB)</strong></div>
+                              <div>Used: <strong style={{ color: '#f4f4f5' }}>{(ramUsedMb / 1024).toFixed(2)} GB ({Math.round(ramUsedMb).toLocaleString()} MB)</strong></div>
+                              <div>Available: <strong style={{ color: '#4ade80' }}>{(ramFreeMb / 1024).toFixed(2)} GB ({Math.round(ramFreeMb).toLocaleString()} MB)</strong></div>
                             </div>
                           </div>
 
                           <div className="tm-frame-box" style={{ marginBottom: 0 }}>
-                            <div className="tm-frame-title">Commit Charge (K)</div>
+                            <div className="tm-frame-title">VRAM & Swap (GB / MB)</div>
                             <div style={{ fontSize: '0.72rem', color: '#a1a1aa' }}>
-                              <div>Total: <strong style={{ color: '#f4f4f5' }}>{Math.round(ramUsedMb * 1024)}</strong></div>
-                              <div>Limit: <strong style={{ color: '#f4f4f5' }}>{Math.round(ramTotalMb * 1024)}</strong></div>
-                              <div>Peak: <strong style={{ color: '#f4f4f5' }}>{Math.round(ramUsedMb * 1.12 * 1024)}</strong></div>
+                              <div>dGPU: <strong style={{ color: '#f4f4f5' }}>{(discreteGpu.vram_total_gb || 0) > 0 ? `${(discreteGpu.vram_used_gb || 0).toFixed(1)}/${(discreteGpu.vram_total_gb).toFixed(1)} GB` : 'Shared Mem'}</strong></div>
+                              <div>iGPU: <strong style={{ color: '#f4f4f5' }}>{(integratedGpu.vram_total_gb || 0) > 0 ? `${(integratedGpu.vram_used_gb || 0).toFixed(1)}/${(integratedGpu.vram_total_gb).toFixed(1)} GB` : 'Shared Mem'}</strong></div>
+                              <div>Swap: <strong style={{ color: '#f4f4f5' }}>{vitals?.swap?.total_mb > 0 ? `${(vitals.swap.used_mb / 1024).toFixed(1)}/${(vitals.swap.total_mb / 1024).toFixed(1)} GB` : (vitals?.memory?.swap_total_gb > 0 ? `${vitals.memory.swap_used_gb}/${vitals.memory.swap_total_gb} GB` : '0 GB')}</strong></div>
                             </div>
                           </div>
                         </div>
@@ -1341,23 +1378,28 @@ export default function App() {
 
                     <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '8px' }}>
                       {/* Local Machine Node */}
-                      <div style={{ background: selectedDeviceId === 'local' ? '#27272a' : '#09090b', border: '1px solid #27272a', borderRadius: '4px', padding: '12px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <div style={{ background: isLocalSelected ? '#27272a' : '#09090b', border: '1px solid #27272a', borderRadius: '4px', padding: '12px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                         <div>
                           <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                            <span style={{ fontWeight: 'bold', fontSize: '0.85rem', color: '#f4f4f5' }}>🖥️ {vitals?.sys_info?.hostname || 'Host Workstation'} (Local Hub)</span>
+                            <span style={{ fontWeight: 'bold', fontSize: '0.85rem', color: '#f4f4f5' }}>
+                              🖥️ {localNode?.hostname || localVitals?.sys_info?.hostname || 'Host Workstation'} (Local Hub)
+                            </span>
                             <span style={{ fontSize: '0.65rem', padding: '1px 6px', borderRadius: '2px', background: 'rgba(74, 222, 128, 0.15)', color: '#4ade80', fontWeight: 'bold' }}>● ONLINE</span>
                           </div>
                           <div style={{ fontSize: '0.72rem', color: '#71717a', marginTop: '3px' }}>
-                            IP: 127.0.0.1 • OS: {vitals?.sys_info?.distro_name || 'Linux'} • CPU: {vitals?.cpu?.percent ?? 0}% • RAM: {vitals?.memory?.percent ?? 0}%
+                            IP: 127.0.0.1 • OS: {localNode?.distro_name || localVitals?.sys_info?.distro_name || 'Linux'} • CPU: {localNode?.vitals_summary?.cpu ?? localVitals?.cpu?.percent ?? 0}% • RAM: {localNode?.vitals_summary?.ram ?? localVitals?.memory?.percent ?? 0}% ({(ramUsedMb / 1024).toFixed(1)}/{(ramTotalMb / 1024).toFixed(1)} GB)
+                            {(discreteGpu.name || integratedGpu.name) && (
+                              <span> • GPU: {discreteGpu.name ? `${discreteGpu.name} (${(discreteGpu.vram_total_gb || 0) > 0 ? `${(discreteGpu.vram_total_gb).toFixed(1)} GB VRAM` : 'Discrete'})` : integratedGpu.name}</span>
+                            )}
                           </div>
                         </div>
                         <div>
                           <button
-                            onClick={() => setSelectedDeviceId('local')}
-                            disabled={selectedDeviceId === 'local'}
-                            style={{ background: selectedDeviceId === 'local' ? '#18181b' : '#27272a', border: '1px solid #3f3f46', color: '#f4f4f5', padding: '5px 12px', borderRadius: '3px', fontSize: '0.72rem', cursor: selectedDeviceId === 'local' ? 'default' : 'pointer' }}
+                            onClick={() => setSelectedDeviceId('local-node')}
+                            disabled={isLocalSelected}
+                            style={{ background: isLocalSelected ? '#18181b' : '#27272a', border: '1px solid #3f3f46', color: '#f4f4f5', padding: '5px 12px', borderRadius: '3px', fontSize: '0.72rem', cursor: isLocalSelected ? 'default' : 'pointer' }}
                           >
-                            {selectedDeviceId === 'local' ? 'Active Target' : 'Inspect'}
+                            {isLocalSelected ? 'Active Target' : 'Inspect'}
                           </button>
                         </div>
                       </div>
@@ -1376,9 +1418,34 @@ export default function App() {
                                 </span>
                               </div>
                               <div style={{ fontSize: '0.72rem', color: '#71717a', marginTop: '3px' }}>
-                                IP: {dev.ip} • OS: {dev.distro_name || 'Linux'} • Owner: {dev.owner_admin || adminUser}
-                                {isOnline && dev.vitals_summary && (
-                                  <span> • CPU: {dev.vitals_summary.cpu ?? 0}% • RAM: {dev.vitals_summary.ram ?? 0}%</span>
+                                IP: {dev.ip} • OS: {dev.distro_name || 'Linux'} • Owner: <span style={{ color: '#f4f4f5', fontWeight: 'bold' }}>{dev.owner_admin || adminUser}</span>
+                                {dev.owner_admin !== adminUser && (
+                                  <button
+                                    onClick={async () => {
+                                      try {
+                                        await fetch('/api/fleet/claim-device', {
+                                          method: 'POST',
+                                          headers: { 'Content-Type': 'application/json' },
+                                          body: JSON.stringify({ device_id: dev.device_id, admin_user: adminUser, token: adminToken })
+                                        });
+                                      } catch(e) {}
+                                    }}
+                                    style={{ background: '#1e3a5f', border: '1px solid #2563eb', color: '#93c5fd', padding: '1px 6px', borderRadius: '3px', fontSize: '0.65rem', marginLeft: '6px', cursor: 'pointer' }}
+                                    title={`Bind device strictly to ${adminUser}`}
+                                  >
+                                    Claim for {adminUser}
+                                  </button>
+                                )}
+                                {dev.vitals_summary && (
+                                  <span>
+                                    {' '}• CPU: {dev.vitals_summary.cpu ?? 0}% • RAM: {dev.vitals_summary.ram ?? 0}%
+                                    {dev.latest_vitals?.memory?.total_gb && (
+                                      <span> ({(dev.latest_vitals.memory.used_gb || (dev.latest_vitals.memory.used_mb / 1024) || 0).toFixed(1)}/{(dev.latest_vitals.memory.total_gb).toFixed(1)} GB)</span>
+                                    )}
+                                    {dev.latest_vitals?.gpu?.available && dev.latest_vitals.gpu.name && (
+                                      <span> • GPU: {dev.latest_vitals.gpu.name} ({dev.latest_vitals.gpu.usage_percent || 0}%{(dev.latest_vitals.gpu.vram_total_gb || 0) > 0 ? `, ${(dev.latest_vitals.gpu.vram_total_gb).toFixed(1)} GB VRAM` : ''})</span>
+                                    )}
+                                  </span>
                                 )}
                               </div>
                             </div>
@@ -1423,11 +1490,11 @@ export default function App() {
             </div>
 
             <div
-              className={`start-menu-item ${selectedDeviceId === 'local' ? 'active' : ''}`}
-              onClick={() => { setSelectedDeviceId('local'); setStartMenuOpen(false); }}
-              style={{ background: selectedDeviceId === 'local' ? '#27272a' : 'transparent', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}
+              className={`start-menu-item ${isLocalSelected ? 'active' : ''}`}
+              onClick={() => { setSelectedDeviceId('local-node'); setStartMenuOpen(false); }}
+              style={{ background: isLocalSelected ? '#27272a' : 'transparent', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}
             >
-              <span>🖥️ {vitals?.sys_info?.hostname || 'This Machine'} (Local)</span>
+              <span>🖥️ {localNode?.hostname || localVitals?.sys_info?.hostname || 'This Machine'} (Local)</span>
               <span style={{ fontSize: '0.65rem', color: '#4ade80' }}>● ONLINE</span>
             </div>
 
@@ -1493,7 +1560,7 @@ export default function App() {
         {/* System Tray */}
         <div className="system-tray">
           <span style={{ color: '#4ade80', fontSize: '0.72rem', fontWeight: 'bold' }}>
-            ● ONLINE ({vitals?.sys_info?.hostname || 'Host'})
+            ● ONLINE ({isLocalSelected ? (localNode?.hostname || localVitals?.sys_info?.hostname || 'Host') : `${activeDevice?.hostname || selectedDeviceId} (Remote)`})
           </span>
           <span style={{ color: '#a1a1aa', fontSize: '0.68rem', marginLeft: '6px' }}>
             [{fleetSummary.online_count || 1}/{(fleetSummary.total_count || 1)} Online]
@@ -1505,10 +1572,10 @@ export default function App() {
       {/* Enrollment Token Modal */}
       {showTokenModal && (
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 9999 }}>
-          <div style={{ width: '460px', background: '#18181b', border: '1px solid #27272a', borderRadius: '6px', padding: '18px', color: '#f4f4f5' }}>
+          <div style={{ width: '480px', background: '#18181b', border: '1px solid #27272a', borderRadius: '6px', padding: '18px', color: '#f4f4f5' }}>
             <div style={{ fontSize: '0.9rem', fontWeight: 'bold', marginBottom: '8px' }}>🔑 Add New Remote Device</div>
             <div style={{ fontSize: '0.75rem', color: '#a1a1aa', marginBottom: '12px' }}>
-              Run this command on the remote device to pair it with account <strong>{adminUser}</strong>:
+              Run this command on the remote device to pair it strictly with account <strong style={{ color: '#38bdf8' }}>{adminUser}</strong>:
             </div>
 
             <div style={{ fontSize: '0.75rem', color: '#a1a1aa', marginBottom: '6px', fontWeight: 'bold' }}>
@@ -1526,16 +1593,16 @@ export default function App() {
             )}
 
             <div style={{ fontSize: '0.72rem', color: '#a1a1aa', marginBottom: '12px' }}>
-              ⚡ Option 2: Instant run without sudo (User mode):
+              ⚡ Option 2: Instant run (bound to <strong>{adminUser}</strong>):
               <div style={{ background: '#09090b', padding: '6px 10px', borderRadius: '4px', border: '1px solid #27272a', fontFamily: 'monospace', color: '#38bdf8', marginTop: '4px', wordBreak: 'break-all' }}>
-                curl -sSL "http://{tokenData?.hub_ip || window.location.hostname}:15000/connect.sh?token={generatedToken}" | bash
+                curl -sSL "http://{tokenData?.hub_ip || window.location.hostname}:15000/connect.sh?admin={adminUser}" | bash
               </div>
             </div>
 
             <div style={{ fontSize: '0.72rem', color: '#a1a1aa', marginBottom: '12px' }}>
-              Option 3: Manual enrollment:
+              Option 3: Manual enrollment with Admin User & Password:
               <div style={{ background: '#09090b', padding: '6px 10px', borderRadius: '4px', border: '1px solid #27272a', fontFamily: 'monospace', color: '#f59e0b', marginTop: '4px', wordBreak: 'break-all' }}>
-                HUB_URL="ws://{tokenData?.hub_ip || window.location.hostname}:15000" ENROLL_TOKEN="{generatedToken}" python3 agent_client.py
+                HUB_URL="ws://{tokenData?.hub_ip || window.location.hostname}:15000" python3 agent_client.py --admin "{adminUser}" --password "YOUR_PASSWORD"
               </div>
             </div>
 

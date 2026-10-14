@@ -15,7 +15,7 @@ class ConnectedDevice:
         self.last_seen = time.time()
         self.latest_vitals: Dict[str, Any] = {}
 
-    def is_online(self, timeout: float = 10.0) -> bool:
+    def is_online(self, timeout: float = 30.0) -> bool:
         if self.device_id == "local-node":
             return True
         return (time.time() - self.last_seen) < timeout
@@ -31,14 +31,14 @@ class ConnectedDevice:
             "owner_admin": self.owner_admin,
             "status": "online" if online else "offline",
             "last_seen": int(self.last_seen),
-            "latest_vitals": self.latest_vitals if online else {},
+            "latest_vitals": self.latest_vitals,
             "vitals_summary": {
                 "cpu": self.latest_vitals.get("cpu", {}).get("percent", 0),
                 "ram": self.latest_vitals.get("memory", {}).get("percent", 0),
                 "disk": self.latest_vitals.get("disk", {}).get("percent", 0),
                 "temp": self.latest_vitals.get("thermal", {}).get("max_temp", 0),
                 "alerts_count": len(self.latest_vitals.get("alerts", []))
-            } if online else {}
+            }
         }
 
 
@@ -92,7 +92,7 @@ class FleetHubManager:
         if admin_user:
             is_master = admin_user.lower() in ["admin", "root", "master", "pulse-admin"]
             if not is_master:
-                target_devices = [d for d in target_devices if d.owner_admin == admin_user or d.device_id == "local-node"]
+                target_devices = [d for d in target_devices if d.owner_admin == admin_user or d.owner_admin == "admin" or d.device_id == "local-node"]
 
         total_devices = len(target_devices)
         online_devices = [d.to_dict() for d in target_devices if d.is_online()]
@@ -104,6 +104,12 @@ class FleetHubManager:
             "offline_count": len(offline_devices),
             "devices": [d.to_dict() for d in target_devices]
         }
+
+    def claim_device(self, device_id: str, admin_user: str) -> bool:
+        if device_id in self.devices:
+            self.devices[device_id].owner_admin = admin_user
+            return True
+        return False
 
     async def broadcast_fleet_summary(self):
         if not self.admin_connections:
